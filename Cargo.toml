@@ -1,0 +1,16 @@
+[package]
+name = "tdx"
+version = "0.1.0"
+authors = ["The VirTEE Project Developers <virtee-security@redhat.com>"]
+edition = "2021"
+license = "Apache-2.0"
+homepage = "https://github.com/virtee/tdx"
+repository = "https://github.com/virtee/tdx"
+description = "Library for Intel TDX"
+readme = "README.md"
+keywords = ["intel", "sgx", "tdx"]
+categories = ["os", "os::linux-apis", "hardware-support"]
+rust-version = "1.71"
+
+[dependencies]
+kvm-ioctls = "0.16.0"
