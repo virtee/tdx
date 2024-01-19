@@ -13,4 +13,5 @@ categories = ["os", "os::linux-apis", "hardware-support"]
 rust-version = "1.71"
 
 [dependencies]
+bitflags = "2.4.2"
 kvm-ioctls = "0.16.0"

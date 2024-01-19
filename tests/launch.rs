@@ -2,11 +2,11 @@
 
 use kvm_ioctls::Kvm;
 
-// Defined in linux/arch/x86/include/uapi/asm/kvm.h
-const KVM_X86_TDX_VM: u64 = 2;
+use tdx::vm::TdxVm;
 
 #[test]
 fn launch() {
     let kvm_fd = Kvm::new().unwrap();
-    let vm_fd = kvm_fd.create_vm_with_type(KVM_X86_TDX_VM).unwrap();
+    let tdx_vm = TdxVm::new(kvm_fd).unwrap();
+    let _caps = tdx_vm.get_capabilities().unwrap();
 }
