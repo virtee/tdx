@@ -2,3 +2,6 @@
 
 pub mod vcpu;
 pub mod vm;
+
+#[cfg(target_os = "linux")]
+pub mod linux;

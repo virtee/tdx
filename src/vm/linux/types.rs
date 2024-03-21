@@ -96,3 +96,57 @@ impl Default for Capabilities {
         }
     }
 }
+
+/// TDX specific VM initialization information
+#[derive(Debug)]
+#[repr(C)]
+pub struct InitVm {
+    /// attributes specifies various guest TD attributes
+    pub attributes: u64,
+
+    /// mrconfigid is a software-defined ID for non-owner-defined configuration of the guest TD
+    /// (runtime or OS configuration)
+    pub mrconfigid: [u64; 6],
+
+    /// mrowner is a software-defined ID for the guest TD’s owner
+    pub mrowner: [u64; 6],
+
+    /// mrownerconfig is a software-defined ID for owner-defined configuration of the guest TD
+    /// (specific to the workload)
+    pub mrownerconfig: [u64; 6],
+
+    /// reserved for future extensibility
+    reserved: [u64; 1004],
+
+    /// direct configuration of CPUID leaves/subleaves virtualization
+    pub cpuid_nent: u32,
+    cpuid_padding: u32,
+    pub cpuid_entries: [kvm_bindings::kvm_cpuid_entry2; 256],
+}
+
+impl InitVm {
+    pub fn new(cpuid_entries: &Vec<kvm_bindings::kvm_cpuid_entry2>) -> Self {
+        Self {
+            cpuid_nent: cpuid_entries.len() as u32,
+            cpuid_entries: cpuid_entries.as_slice().try_into().unwrap(),
+            ..Default::default()
+        }
+    }
+}
+
+impl Default for InitVm {
+    fn default() -> Self {
+        Self {
+            // set the SEPT_VE_DISABLE bit by default to prevent an Extended Page Table
+            // (EPT) violation to #VE caused by guest TD access of PENDING pages
+            attributes: crate::vm::AttributesFlags::SEPT_VE_DISABLE.bits(),
+            mrconfigid: [0; 6],
+            mrowner: [0; 6],
+            mrownerconfig: [0; 6],
+            reserved: [0; 1004],
+            cpuid_nent: 0,
+            cpuid_padding: 0,
+            cpuid_entries: [Default::default(); 256],
+        }
+    }
+}
