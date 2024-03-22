@@ -2,24 +2,25 @@
 
 mod linux;
 
-use crate::vm::linux::{
-    ioctl::Cmd,
-    types::{Capabilities, CpuidConfig},
-};
+use crate::linux::{Cmd, CmdId, TdxError};
+use crate::vm::linux::types::{Capabilities, CpuidConfig, InitMemRegion, InitVm};
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
+use std::arch::x86_64;
 
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
 const KVM_X86_TDX_VM: u64 = 2;
 
 /// Handle to the TDX VM file descriptor
-pub struct TdxVm(VmFd);
+pub struct TdxVm {
+    pub fd: VmFd,
+}
 
 impl TdxVm {
     /// Create a new TDX VM with KVM
-    pub fn new(kvm_fd: Kvm) -> Result<Self, TdxError> {
+    pub fn new(kvm_fd: &Kvm) -> Result<Self, TdxError> {
         let vm_fd = kvm_fd.create_vm_with_type(KVM_X86_TDX_VM)?;
-        Ok(Self(vm_fd))
+        Ok(Self { fd: vm_fd })
     }
 
     /// Retrieve information about the Intel TDX module
@@ -28,9 +29,7 @@ impl TdxVm {
         let mut cmd: Cmd = Cmd::from(&caps);
 
         unsafe {
-            if let Err(e) = self.0.encrypt_op(&mut cmd) {
-                return Err(TdxError::from(e));
-            }
+            self.fd.encrypt_op(&mut cmd)?;
         }
 
         Ok(TdxCapabilities {
@@ -45,6 +44,105 @@ impl TdxVm {
             supported_gpaw: caps.supported_gpaw,
             cpuid_configs: Vec::from(caps.cpuid_configs),
         })
+    }
+
+    /// Do additional VM initialization that is specific to Intel TDX
+    pub fn init_vm(&self, kvm_fd: &Kvm, caps: &TdxCapabilities) -> Result<(), TdxError> {
+        let cpuid = kvm_fd
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .unwrap();
+        let mut cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> =
+            cpuid.as_slice().iter().map(|e| (*e).into()).collect();
+
+        // resize to 256 entries to make sure that InitVm is 8KB
+        cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
+
+        // hex for Ob1100000001011111111 based on the XSAVE state-components architecture
+        let xcr0_mask = 0x602ff;
+        // hex for 0b11111110100000000 based on the XSAVE state-components architecture
+        let xss_mask = 0x1FD00;
+
+        let xfam_fixed0 = caps.xfam.fixed0.bits();
+        let xfam_fixed1 = caps.xfam.fixed1.bits();
+
+        // patch cpuid
+        for entry in cpuid_entries.as_mut_slice() {
+            // get the configurable cpuid bits (can be set to 0 or 1) reported by TDX Module from
+            // TdxCapabilities
+            for cpuid_config in &caps.cpuid_configs {
+                // 0xffffffff means the cpuid leaf has no subleaf
+                if cpuid_config.leaf == entry.function
+                    && (cpuid_config.sub_leaf == 0xffffffff || cpuid_config.sub_leaf == entry.index)
+                {
+                    entry.eax |= cpuid_config.eax;
+                    entry.ebx |= cpuid_config.ebx;
+                    entry.ecx |= cpuid_config.ecx;
+                    entry.edx |= cpuid_config.edx;
+                }
+            }
+
+            // mandatory patches for TDX based on XFAM values reported by TdxCapabilities
+            match entry.index {
+                // XSAVE features and state-components
+                0xD => {
+                    if entry.index == 0 {
+                        // XSAVE XCR0 LO
+                        entry.eax &= (xfam_fixed0 as u32) & (xcr0_mask as u32);
+                        entry.eax |= (xfam_fixed1 as u32) & (xcr0_mask as u32);
+                        // XSAVE XCR0 HI
+                        entry.edx &= ((xfam_fixed0 & xcr0_mask) >> 32) as u32;
+                        entry.edx |= ((xfam_fixed1 & xcr0_mask) >> 32) as u32;
+                    } else if entry.index == 1 {
+                        // XSAVE XCR0 LO
+                        entry.ecx &= (xfam_fixed0 as u32) & (xss_mask as u32);
+                        entry.ecx |= (xfam_fixed1 as u32) & (xss_mask as u32);
+                        // XSAVE XCR0 HI
+                        entry.edx &= ((xfam_fixed0 & xss_mask) >> 32) as u32;
+                        entry.edx |= ((xfam_fixed1 & xss_mask) >> 32) as u32;
+                    }
+                }
+                0x8000_0008 => {
+                    // host physical address bits supported
+                    let phys_bits = unsafe { x86_64::__cpuid(0x8000_0008).eax } & 0xff;
+                    entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits as u32 & 0xff);
+                }
+                _ => (),
+            }
+        }
+
+        let mut cmd = Cmd::from(&InitVm::new(&cpuid_entries));
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
+
+    /// Add a 4KB private page to a TD, mapped to the specified guest address,
+    /// filled with the given page image at the host address. If `measure_memory_regions`
+    /// is `true`, also updates the TD measurement with the page properties.
+    pub fn init_mem_region(
+        &self,
+        measure_memory_regions: bool,
+        init_mem_region: &TdxInitMemRegion,
+    ) -> Result<(), TdxError> {
+        let init_mem_region = &InitMemRegion::from(init_mem_region);
+        let mut cmd = Cmd::from(init_mem_region);
+        cmd.flags = measure_memory_regions as u32;
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+        Ok(())
+    }
+
+    /// Complete measurement of the initial TD contents and mark it ready to run
+    pub fn finalize_vm(&self) -> Result<(), TdxError> {
+        let mut cmd = Cmd::default();
+        cmd.id = CmdId::FinalizeVm as u32;
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+        Ok(())
     }
 }
 
@@ -194,27 +292,25 @@ pub struct TdxCapabilities {
     pub cpuid_configs: Vec<CpuidConfig>,
 }
 
+/// Information to encrypt a contiguous memory region
 #[derive(Debug)]
-pub struct TdxError {
-    pub code: i32,
-    pub message: String,
+pub struct TdxInitMemRegion {
+    /// private page image
+    pub host_address: u64,
+
+    /// guest address to map the private page image to
+    pub guest_address: u64,
+
+    /// number of 4KB private pages
+    pub nr_pages: u64,
 }
 
-impl From<kvm_ioctls::Error> for TdxError {
-    fn from(kvm_err: kvm_ioctls::Error) -> Self {
-        match kvm_err.errno() {
-            7 => TdxError {
-                code: 7,
-                message: String::from("Invalid value for NR_CPUID_CONFIGS"),
-            },
-            25 => TdxError {
-                code: 25,
-                message: String::from("Inappropriate ioctl for device. Ensure the proper VM type is being used for the ioctl"),
-            },
-            _ => TdxError {
-                code: kvm_err.errno(),
-                message: format!("errno: {}", kvm_err.errno()),
-            },
+impl TdxInitMemRegion {
+    pub fn new(host_address: u64, guest_address: u64, nr_pages: u64) -> Self {
+        Self {
+            host_address,
+            guest_address,
+            nr_pages,
         }
     }
 }

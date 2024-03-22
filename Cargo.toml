@@ -14,4 +14,6 @@ rust-version = "1.71"
 
 [dependencies]
 bitflags = "2.4.2"
+kvm-bindings = "0.7.0"
 kvm-ioctls = "0.16.0"
+vmm-sys-util = "0.12.1"
