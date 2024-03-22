@@ -3,7 +3,7 @@
 use kvm_ioctls::Kvm;
 
 use tdx::vcpu::TdxVcpu;
-use tdx::vm::TdxVm;
+use tdx::vm::{TdxInitMemRegion, TdxVm};
 
 #[test]
 fn launch() {
@@ -13,4 +13,7 @@ fn launch() {
     let _ = tdx_vm.init_vm(&kvm_fd, &caps).unwrap();
     let tdx_vcpu = TdxVcpu::new(&tdx_vm, 0).unwrap();
     let _ = tdx_vcpu.init_vcpu(0).unwrap();
+    let init_mem_region = TdxInitMemRegion::new(0, 0, 0);
+    let _ = tdx_vm.init_mem_region(true, &init_mem_region).unwrap();
+    let _ = tdx_vm.finalize_vm().unwrap();
 }

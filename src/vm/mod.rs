@@ -2,8 +2,8 @@
 
 mod linux;
 
-use crate::linux::{Cmd, TdxError};
-use crate::vm::linux::types::{Capabilities, CpuidConfig, InitVm};
+use crate::linux::{Cmd, CmdId, TdxError};
+use crate::vm::linux::types::{Capabilities, CpuidConfig, InitMemRegion, InitVm};
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
 use std::arch::x86_64;
@@ -115,6 +115,33 @@ impl TdxVm {
             self.fd.encrypt_op(&mut cmd)?;
         }
 
+        Ok(())
+    }
+
+    /// Add a 4KB private page to a TD, mapped to the specified guest address,
+    /// filled with the given page image at the host address. If `measure_memory_regions`
+    /// is `true`, also updates the TD measurement with the page properties.
+    pub fn init_mem_region(
+        &self,
+        measure_memory_regions: bool,
+        init_mem_region: &TdxInitMemRegion,
+    ) -> Result<(), TdxError> {
+        let init_mem_region = &InitMemRegion::from(init_mem_region);
+        let mut cmd = Cmd::from(init_mem_region);
+        cmd.flags = measure_memory_regions as u32;
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+        Ok(())
+    }
+
+    /// Complete measurement of the initial TD contents and mark it ready to run
+    pub fn finalize_vm(&self) -> Result<(), TdxError> {
+        let mut cmd = Cmd::default();
+        cmd.id = CmdId::FinalizeVm as u32;
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
         Ok(())
     }
 }
@@ -263,4 +290,27 @@ pub struct TdxCapabilities {
     pub supported_gpaw: u32,
 
     pub cpuid_configs: Vec<CpuidConfig>,
+}
+
+/// Information to encrypt a contiguous memory region
+#[derive(Debug)]
+pub struct TdxInitMemRegion {
+    /// private page image
+    pub host_address: u64,
+
+    /// guest address to map the private page image to
+    pub guest_address: u64,
+
+    /// number of 4KB private pages
+    pub nr_pages: u64,
+}
+
+impl TdxInitMemRegion {
+    pub fn new(host_address: u64, guest_address: u64, nr_pages: u64) -> Self {
+        Self {
+            host_address,
+            guest_address,
+            nr_pages,
+        }
+    }
 }

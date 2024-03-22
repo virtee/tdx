@@ -150,3 +150,27 @@ impl Default for InitVm {
         }
     }
 }
+
+/// Information to encrypt a contiguous memory region
+#[derive(Debug)]
+#[repr(C)]
+pub struct InitMemRegion {
+    /// private page image
+    pub source_addr: u64,
+
+    /// guest address to map the private page image to
+    pub gpa: u64,
+
+    /// number of 4KB private pages
+    pub nr_pages: u64,
+}
+
+impl From<&crate::vm::TdxInitMemRegion> for InitMemRegion {
+    fn from(value: &crate::vm::TdxInitMemRegion) -> Self {
+        Self {
+            source_addr: value.host_address,
+            gpa: value.guest_address,
+            nr_pages: value.nr_pages,
+        }
+    }
+}
