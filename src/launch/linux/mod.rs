@@ -7,7 +7,6 @@ pub const NR_CPUID_CONFIGS: usize = 12;
 pub enum CmdId {
     GetCapabilities = 0,
     InitVm = 1,
-    InitVcpu = 2,
 }
 
 /// Contains information for the sub-ioctl() command to be run. This is
