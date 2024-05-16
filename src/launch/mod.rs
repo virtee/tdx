@@ -51,8 +51,7 @@ impl TdxVm {
         let cpuid = kvm_fd
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .unwrap();
-        let mut cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> =
-            cpuid.as_slice().iter().map(|e| (*e).into()).collect();
+        let mut cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> = cpuid.as_slice().to_vec();
 
         // resize to 256 entries to make sure that InitVm is 8KB
         cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
@@ -90,7 +89,7 @@ impl TdxVm {
                 0x8000_0008 => {
                     // host physical address bits supported
                     let phys_bits = unsafe { x86_64::__cpuid(0x8000_0008).eax } & 0xff;
-                    entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits as u32 & 0xff);
+                    entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits & 0xff);
                 }
                 _ => (),
             }
