@@ -2,8 +2,8 @@
 
 mod linux;
 
-use crate::linux::{Cmd, TdxError};
-use crate::vm::linux::types::{Capabilities, CpuidConfig, InitVm};
+use linux::{Capabilities, Cmd, CpuidConfig, InitVm, TdxError};
+
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
 use std::arch::x86_64;
