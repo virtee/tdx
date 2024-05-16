@@ -2,7 +2,7 @@
 
 use kvm_ioctls::Kvm;
 
-use tdx::vm::TdxVm;
+use tdx::launch::TdxVm;
 
 #[test]
 fn launch() {
