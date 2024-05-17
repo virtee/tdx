@@ -2,6 +2,7 @@
 
 mod linux;
 
+use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
 use linux::{Capabilities, Cmd, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
@@ -18,8 +19,19 @@ pub struct TdxVm {
 
 impl TdxVm {
     /// Create a new TDX VM with KVM
-    pub fn new(kvm_fd: &Kvm) -> Result<Self, TdxError> {
+    pub fn new(kvm_fd: &Kvm, max_vcpus: u64) -> Result<Self, TdxError> {
         let vm_fd = kvm_fd.create_vm_with_type(KVM_X86_TDX_VM)?;
+        let mut cap: kvm_enable_cap = Default::default();
+
+        // TDX requires that MAX_VCPUS and SPLIT_IRQCHIP be set
+        cap.cap = KVM_CAP_MAX_VCPUS;
+        cap.args[0] = max_vcpus;
+        vm_fd.enable_cap(&cap).unwrap();
+
+        cap.cap = KVM_CAP_SPLIT_IRQCHIP;
+        cap.args[0] = 24;
+        vm_fd.enable_cap(&cap).unwrap();
+
         Ok(Self { fd: vm_fd })
     }
 
