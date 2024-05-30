@@ -261,3 +261,16 @@ pub fn parse_sections(fd: &mut std::fs::File) -> Result<Vec<TdvfSection>, Error>
 
     Ok(sections)
 }
+
+/// Given the sections in the TDVF table, return the HOB (Hand-off Block) section
+pub fn get_hob_section(sections: &Vec<TdvfSection>) -> Option<&TdvfSection> {
+    for section in sections {
+        match section.section_type {
+            TdvfSectionType::TdHob => {
+                return Some(section);
+            }
+            _ => continue,
+        }
+    }
+    None
+}
