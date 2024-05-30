@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::io::{Read, Seek, SeekFrom};
+use uuid::Uuid;
+
 const EXPECTED_TABLE_FOOTER_GUID: &str = "96b582de-1fb2-45f7-baea-a366c55a082d";
 const EXPECTED_METADATA_GUID: &str = "e47a6535-984a-4798-865e-4685a7bf8ec2";
 
@@ -99,4 +102,30 @@ impl std::fmt::Display for Error {
             Self::InvalidDescriptorSize => write!(f, "TDX Metadata Descriptor size is invalid"),
         }
     }
+}
+
+/// Locate the GUID at the footer of the OVMF flash file
+fn locate_table_footer_guid(fd: &mut std::fs::File) -> Result<Uuid, Error> {
+    // there are 32 bytes between the footer GUID and the bottom of the flash file, so we need to
+    // move -48 bytes from the bottom of the file to read the 16 byte GUID
+    fd.seek(SeekFrom::End(-0x30)).map_err(Error::TableSeek)?;
+
+    let mut table_footer_guid: [u8; 16] = [0; 16];
+    fd.read_exact(&mut table_footer_guid)
+        .map_err(Error::TableRead)?;
+
+    Uuid::from_slice_le(table_footer_guid.as_slice()).map_err(Error::UuidCreate)
+}
+
+/// Locate the size of the entry table in the OVMF flash file
+fn locate_table_size(fd: &mut std::fs::File) -> Result<u16, Error> {
+    // from the bottom of the file, there is 32 bytes between the footer GUID, 16 bytes for the
+    // GUID, and there are 2 bytes for the size of the entry table. We need to move -50 bytes from
+    // the bottom of the file to read those 2 bytes.
+    fd.seek(SeekFrom::End(-0x32)).map_err(Error::TableSeek)?;
+
+    let mut table_size: [u8; 2] = [0; 2];
+    fd.read_exact(&mut table_size).map_err(Error::TableRead)?;
+
+    Ok(u16::from_le_bytes(table_size))
 }
