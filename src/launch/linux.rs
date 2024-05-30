@@ -5,8 +5,9 @@ pub const NR_CPUID_CONFIGS: usize = 12;
 /// Trust Domain eXtensions sub-ioctl() commands
 #[repr(u32)]
 pub enum CmdId {
-    GetCapabilities = 0,
-    InitVm = 1,
+    GetCapabilities,
+    InitVm,
+    InitVcpu,
 }
 
 /// Contains information for the sub-ioctl() command to be run. This is

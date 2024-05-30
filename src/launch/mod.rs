@@ -21,10 +21,12 @@ impl TdxVm {
     /// Create a new TDX VM with KVM
     pub fn new(kvm_fd: &Kvm, max_vcpus: u64) -> Result<Self, TdxError> {
         let vm_fd = kvm_fd.create_vm_with_type(KVM_X86_TDX_VM)?;
-        let mut cap: kvm_enable_cap = Default::default();
 
         // TDX requires that MAX_VCPUS and SPLIT_IRQCHIP be set
-        cap.cap = KVM_CAP_MAX_VCPUS;
+        let mut cap: kvm_enable_cap = kvm_enable_cap {
+            cap: KVM_CAP_MAX_VCPUS,
+            ..Default::default()
+        };
         cap.args[0] = max_vcpus;
         vm_fd.enable_cap(&cap).unwrap();
 
@@ -260,4 +262,58 @@ pub struct TdxCapabilities {
     pub supported_gpaw: u32,
 
     pub cpuid_configs: Vec<CpuidConfig>,
+}
+
+/// Manually create the wrapper for KVM_MEMORY_ENCRYPT_OP since `kvm_ioctls` doesn't
+/// support `.encrypt_op` for vcpu fds
+use vmm_sys_util::*;
+ioctl_iowr_nr!(
+    KVM_MEMORY_ENCRYPT_OP,
+    kvm_bindings::KVMIO,
+    0xba,
+    std::os::raw::c_ulong
+);
+
+pub struct TdxVcpu<'a> {
+    pub fd: &'a mut kvm_ioctls::VcpuFd,
+}
+
+impl<'a> TdxVcpu<'a> {
+    pub fn init(&self, hob_address: u64) -> Result<(), TdxError> {
+        let mut cmd = Cmd {
+            id: linux::CmdId::InitVcpu as u32,
+            flags: 0,
+            data: hob_address as *const u64 as _,
+            error: 0,
+            _unused: 0,
+        };
+        let ret = unsafe { ioctl::ioctl_with_mut_ptr(self.fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
+        if ret < 0 {
+            // can't return `ret` because it will just return -1 and not give the error
+            // code. `cmd.error` will also just be 0.
+            return Err(TdxError::from(errno::Error::last()));
+        }
+        Ok(())
+    }
+}
+
+impl<'a> TryFrom<(&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm)> for TdxVcpu<'a> {
+    type Error = TdxError;
+
+    fn try_from(
+        value: (&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm),
+    ) -> Result<Self, Self::Error> {
+        // need to enable the X2APIC bit for CPUID[0x1] so that the kernel can call
+        // KVM_SET_MSRS(MSR_IA32_APIC_BASE) without failing
+        let mut cpuid = value
+            .1
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)?;
+        for entry in cpuid.as_mut_slice().iter_mut() {
+            if entry.index == 0x1 {
+                entry.ecx &= 1 << 21;
+            }
+        }
+        value.0.set_cpuid2(&cpuid)?;
+        Ok(Self { fd: value.0 })
+    }
 }
