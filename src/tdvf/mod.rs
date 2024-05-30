@@ -216,3 +216,48 @@ pub fn calculate_tdvf_descriptor_offset(fd: &mut std::fs::File) -> Result<u32, E
 
     Ok(u32::from_le_bytes(descriptor_offset))
 }
+
+/// Parse the entries table and return the TDVF sections
+pub fn parse_sections(fd: &mut std::fs::File) -> Result<Vec<TdvfSection>, Error> {
+    let offset = calculate_tdvf_descriptor_offset(fd)?;
+    fd.seek(SeekFrom::End(-(offset as i64)))
+        .map_err(Error::TableSeek)?;
+    let mut descriptor: TdvfDescriptor = Default::default();
+    fd.read_exact(unsafe {
+        std::slice::from_raw_parts_mut(
+            &mut descriptor as *mut _ as *mut u8,
+            std::mem::size_of::<TdvfDescriptor>(),
+        )
+    })
+    .map_err(Error::TableRead)?;
+
+    if &descriptor.signature != b"TDVF" {
+        return Err(Error::InvalidDescriptorSignature);
+    }
+
+    let metadata_size = std::mem::size_of::<TdvfDescriptor>()
+        + std::mem::size_of::<TdvfSection>() * descriptor.number_of_section_entry as usize;
+    if descriptor.length as usize != metadata_size {
+        return Err(Error::InvalidDescriptorSize);
+    }
+
+    if descriptor.version != 1 {
+        return Err(Error::InvalidDescriptorVersion);
+    }
+
+    let mut sections = Vec::new();
+    sections.resize_with(
+        descriptor.number_of_section_entry as usize,
+        TdvfSection::default,
+    );
+
+    fd.read_exact(unsafe {
+        std::slice::from_raw_parts_mut(
+            sections.as_mut_ptr() as *mut u8,
+            descriptor.number_of_section_entry as usize * std::mem::size_of::<TdvfSection>(),
+        )
+    })
+    .map_err(Error::TableRead)?;
+
+    Ok(sections)
+}
