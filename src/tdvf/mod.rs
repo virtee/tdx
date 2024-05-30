@@ -129,3 +129,90 @@ fn locate_table_size(fd: &mut std::fs::File) -> Result<u16, Error> {
 
     Ok(u16::from_le_bytes(table_size))
 }
+
+/// Reads the entry table into the provided table vector
+fn read_table_contents(
+    fd: &mut std::fs::File,
+    table: &mut Vec<u8>,
+    table_size: u16,
+) -> Result<(), Error> {
+    // table_size + the 32 bytes between the footer GUID and the EOF
+    let table_start = -(table_size as i64 + 0x20);
+    fd.seek(SeekFrom::End(table_start))
+        .map_err(Error::TableSeek)?;
+    fd.read_exact(table.as_mut_slice())
+        .map_err(Error::TableRead)?;
+    Ok(())
+}
+
+/// Try to calculate the offset from the bottom of the flash file for the TDX Metadata GUID offset
+fn calculate_tdx_metadata_guid_offset(
+    table: &mut [u8],
+    table_size: usize,
+) -> Result<Option<u32>, Error> {
+    // starting from the end of the table and after the footer guid and table size bytes (16 + 2)
+    let mut offset = table_size - 18;
+    while offset >= 18 {
+        // entries are laid out as follows:
+        //
+        // - data (arbitrary bytes identified by the guid)
+        // - length from start of data to end of guid (2 bytes)
+        // - guid (16 bytes)
+
+        // move backwards through the table to locate the entry guid
+        let entry_uuid =
+            Uuid::from_slice_le(&table[offset - 16..offset]).map_err(Error::UuidCreate)?;
+        // move backwards through the table to locate the entry size
+        let entry_size =
+            u16::from_le_bytes(table[offset - 18..offset - 16].try_into().unwrap()) as usize;
+
+        // Avoid going through an infinite loop if the entry size is 0
+        if entry_size == 0 {
+            break;
+        }
+
+        offset -= entry_size;
+
+        let expected_uuid = Uuid::parse_str(EXPECTED_METADATA_GUID).map_err(Error::UuidCreate)?;
+        if entry_uuid == expected_uuid && entry_size == 22 {
+            return Ok(Some(u32::from_le_bytes(
+                table[offset..offset + 4].try_into().unwrap(),
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Calculate the offset from the bottom of the file where the TDX Metadata offset block is
+/// located
+pub fn calculate_tdvf_descriptor_offset(fd: &mut std::fs::File) -> Result<u32, Error> {
+    let located = locate_table_footer_guid(fd)?;
+    let expected = Uuid::parse_str(EXPECTED_TABLE_FOOTER_GUID).map_err(Error::UuidCreate)?;
+
+    // we found the table footer guid
+    if located == expected {
+        // find the table size
+        let table_size = locate_table_size(fd)?;
+
+        let mut table: Vec<u8> = vec![0; table_size as usize];
+        read_table_contents(fd, &mut table, table_size)?;
+
+        // starting from the top and go backwards down the table.
+        // starting after the footer GUID and the table length
+        if let Ok(Some(offset)) =
+            calculate_tdx_metadata_guid_offset(&mut table, table_size as usize)
+        {
+            return Ok(offset);
+        }
+    }
+
+    // if we get here then the firmware doesn't support exposing the offset through the GUID table
+    fd.seek(SeekFrom::End(-0x20)).map_err(Error::TableSeek)?;
+
+    let mut descriptor_offset: [u8; 4] = [0; 4];
+    fd.read_exact(&mut descriptor_offset)
+        .map_err(Error::TableRead)?;
+
+    Ok(u32::from_le_bytes(descriptor_offset))
+}
