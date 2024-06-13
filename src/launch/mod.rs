@@ -2,8 +2,10 @@
 
 mod linux;
 
+use crate::tdvf::TdvfSection;
+
 use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
-use linux::{Capabilities, Cmd, CpuidConfig, InitVm, TdxError};
+use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
@@ -105,11 +107,89 @@ impl TdxVm {
                     let phys_bits = unsafe { x86_64::__cpuid(0x8000_0008).eax } & 0xff;
                     entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits & 0xff);
                 }
+                0x4000_0001 => {
+                    const KVM_FEATURE_CLOCKSOURCE_BIT: u8 = 0;
+                    const KVM_FEATURE_CLOCKSOURCE2_BIT: u8 = 3;
+                    const KVM_FEATURE_CLOCKSOURCE_STABLE_BIT: u8 = 24;
+                    const KVM_FEATURE_ASYNC_PF_BIT: u8 = 4;
+                    const KVM_FEATURE_ASYNC_PF_VMEXIT_BIT: u8 = 10;
+                    const KVM_FEATURE_STEAL_TIME_BIT: u8 = 5;
+
+                    entry.eax &= !(1 << KVM_FEATURE_CLOCKSOURCE_BIT
+                        | 1 << KVM_FEATURE_CLOCKSOURCE2_BIT
+                        | 1 << KVM_FEATURE_CLOCKSOURCE_STABLE_BIT
+                        | 1 << KVM_FEATURE_ASYNC_PF_BIT
+                        | 1 << KVM_FEATURE_ASYNC_PF_VMEXIT_BIT
+                        | 1 << KVM_FEATURE_STEAL_TIME_BIT);
+                }
                 _ => (),
             }
         }
 
         let mut cmd = Cmd::from(&InitVm::new(&cpuid_entries));
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
+
+    /// Encrypt a memory continuous region
+    pub fn init_mem_region(&self, section: &TdvfSection, source_addr: u64) -> Result<(), TdxError> {
+        const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
+        let mem_region = linux::TdxInitMemRegion {
+            source_addr,
+            gpa: section.memory_address,
+            nr_pages: section.memory_data_size / 4096,
+        };
+
+        let mut cmd = Cmd::from(&mem_region);
+
+        // determines if we also extend the measurement
+        cmd.flags = if section.attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
+            1
+        } else {
+            0
+        };
+
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn init_mem_region_raw(
+        &self,
+        source_addr: u64,
+        gpa: u64,
+        nr_pages: u64,
+        extend: bool,
+    ) -> Result<(), TdxError> {
+        let mem_region = linux::TdxInitMemRegion {
+            source_addr,
+            gpa,
+            nr_pages,
+        };
+
+        let mut cmd = Cmd::from(&mem_region);
+
+        // determines if we also extend the measurement
+        cmd.flags = extend as u32;
+
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
+
+    /// Complete measurement of the initial TD contents and mark it ready to run
+    pub fn finalize(&self) -> Result<(), TdxError> {
+        let mut cmd = Cmd {
+            id: CmdId::FinalizeVm as u32,
+            ..Default::default()
+        };
         unsafe {
             self.fd.encrypt_op(&mut cmd)?;
         }

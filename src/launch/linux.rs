@@ -8,6 +8,8 @@ pub enum CmdId {
     GetCapabilities,
     InitVm,
     InitVcpu,
+    InitMemRegion,
+    FinalizeVm,
 }
 
 /// Contains information for the sub-ioctl() command to be run. This is
@@ -233,6 +235,31 @@ impl From<&InitVm> for Cmd {
             id: CmdId::InitVm as u32,
             flags: 0,
             data: init_vm as *const InitVm as _,
+            error: 0,
+            _unused: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TdxInitMemRegion {
+    /// Host physical address of the target page to be added to the TD
+    pub source_addr: u64,
+
+    /// Guest physical address to be mapped
+    pub gpa: u64,
+
+    /// Number of pages to be mapped
+    pub nr_pages: u64,
+}
+
+impl From<&TdxInitMemRegion> for Cmd {
+    fn from(init_mem_region: &TdxInitMemRegion) -> Self {
+        Self {
+            id: CmdId::InitMemRegion as u32,
+            flags: 0,
+            data: init_mem_region as *const TdxInitMemRegion as _,
             error: 0,
             _unused: 0,
         }
