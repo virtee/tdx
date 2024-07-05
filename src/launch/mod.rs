@@ -81,7 +81,7 @@ impl TdxVm {
         // patch cpuid
         for entry in cpuid_entries.as_mut_slice() {
             // mandatory patches for TDX based on XFAM values reported by TdxCapabilities
-            match entry.index {
+            match entry.function {
                 // XSAVE features and state-components
                 0xD => {
                     if entry.index == 0 {
