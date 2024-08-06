@@ -33,6 +33,10 @@ impl TdxVm {
         cap.args[0] = 24;
         vm_fd.enable_cap(&cap).unwrap();
 
+        cap.cap = kvm_bindings::KVM_CAP_X2APIC_API;
+        cap.args[0] = (1 << 0) | (1 << 1);
+        vm_fd.enable_cap(&cap).unwrap();
+
         Ok(Self { fd: vm_fd })
     }
 
