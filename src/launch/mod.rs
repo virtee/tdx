@@ -117,6 +117,37 @@ impl TdxVm {
 
         Ok(())
     }
+
+    /// Encrypt a memory continuous region
+    pub fn init_mem_region(
+        &self,
+        gpa: u64,
+        nr_pages: u64,
+        attributes: u32,
+        source_addr: u64,
+    ) -> Result<(), TdxError> {
+        const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
+        let mem_region = linux::TdxInitMemRegion {
+            source_addr,
+            gpa,
+            nr_pages,
+        };
+
+        let mut cmd: Cmd<linux::TdxInitMemRegion> = Cmd::from(CmdId::InitMemRegion, &mem_region);
+
+        // determines if we also extend the measurement
+        cmd.flags = if attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
+            1
+        } else {
+            0
+        };
+
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
 }
 
 bitflags! {

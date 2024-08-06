@@ -10,6 +10,7 @@ pub enum CmdId {
     GetCapabilities,
     InitVm,
     InitVcpu,
+    InitMemRegion,
 }
 
 /// Contains information for the sub-ioctl() command to be run. This is
@@ -230,4 +231,17 @@ impl Default for InitVm {
             cpuid_entries: [Default::default(); 256],
         }
     }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct TdxInitMemRegion {
+    /// Host physical address of the target page to be added to the TD
+    pub source_addr: u64,
+
+    /// Guest physical address to be mapped
+    pub gpa: u64,
+
+    /// Number of pages to be mapped
+    pub nr_pages: u64,
 }
