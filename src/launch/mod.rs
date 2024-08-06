@@ -7,7 +7,6 @@ use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
-use std::arch::x86_64;
 
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
 const KVM_X86_TDX_VM: u64 = 2;
@@ -61,7 +60,7 @@ impl TdxVm {
     }
 
     /// Do additional VM initialization that is specific to Intel TDX
-    pub fn init_vm(&self, kvm_fd: &Kvm, caps: &TdxCapabilities) -> Result<(), TdxError> {
+    pub fn init_vm(&self, kvm_fd: &Kvm) -> Result<(), TdxError> {
         let cpuid = kvm_fd
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .unwrap();
@@ -70,42 +69,21 @@ impl TdxVm {
         // resize to 256 entries to make sure that InitVm is 8KB
         cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
 
-        // hex for Ob1100000001011111111 based on the XSAVE state-components architecture
-        let xcr0_mask = 0x602ff;
-        // hex for 0b11111110100000000 based on the XSAVE state-components architecture
-        let xss_mask = 0x1FD00;
-
-        let xfam_fixed0 = caps.xfam.fixed0.bits();
-        let xfam_fixed1 = caps.xfam.fixed1.bits();
-
         // patch cpuid
         for entry in cpuid_entries.as_mut_slice() {
-            // mandatory patches for TDX based on XFAM values reported by TdxCapabilities
-            match entry.index {
-                // XSAVE features and state-components
-                0xD => {
-                    if entry.index == 0 {
-                        // XSAVE XCR0 LO
-                        entry.eax &= (xfam_fixed0 as u32) & (xcr0_mask as u32);
-                        entry.eax |= (xfam_fixed1 as u32) & (xcr0_mask as u32);
-                        // XSAVE XCR0 HI
-                        entry.edx &= ((xfam_fixed0 & xcr0_mask) >> 32) as u32;
-                        entry.edx |= ((xfam_fixed1 & xcr0_mask) >> 32) as u32;
-                    } else if entry.index == 1 {
-                        // XSAVE XCR0 LO
-                        entry.ecx &= (xfam_fixed0 as u32) & (xss_mask as u32);
-                        entry.ecx |= (xfam_fixed1 as u32) & (xss_mask as u32);
-                        // XSAVE XCR0 HI
-                        entry.edx &= ((xfam_fixed0 & xss_mask) >> 32) as u32;
-                        entry.edx |= ((xfam_fixed1 & xss_mask) >> 32) as u32;
-                    }
+            if entry.function == 0xD && entry.index == 0 {
+                const XFEATURE_MASK_XTILE: u32 = (1 << 17) | (1 << 18);
+                if (entry.eax & XFEATURE_MASK_XTILE) != XFEATURE_MASK_XTILE {
+                    entry.eax &= !XFEATURE_MASK_XTILE;
                 }
-                0x8000_0008 => {
-                    // host physical address bits supported
-                    let phys_bits = unsafe { x86_64::__cpuid(0x8000_0008).eax } & 0xff;
-                    entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits & 0xff);
+            }
+
+            if entry.function == 0xD && entry.index == 1 {
+                entry.ecx &= !(1 << 15);
+                const XFEATURE_MASK_CET: u32 = (1 << 11) | (1 << 12);
+                if entry.ecx & XFEATURE_MASK_CET > 0 {
+                    entry.ecx |= XFEATURE_MASK_CET;
                 }
-                _ => (),
             }
         }
 
