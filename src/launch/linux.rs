@@ -11,6 +11,7 @@ pub enum CmdId {
     InitVm,
     InitVcpu,
     InitMemRegion,
+    FinalizeVm,
 }
 
 /// Contains information for the sub-ioctl() command to be run. This is
