@@ -144,6 +144,16 @@ impl TdxVm {
 
         Ok(())
     }
+
+    /// Complete measurement of the initial TD contents and mark it ready to run
+    pub fn finalize(&self) -> Result<(), TdxError> {
+        let mut cmd: Cmd<u64> = Cmd::from(CmdId::FinalizeVm, &0);
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
 }
 
 bitflags! {

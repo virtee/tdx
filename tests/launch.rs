@@ -103,6 +103,25 @@ fn launch() {
             .init_mem_region(guest_addr, 1, 1, firmware_userspace)
             .unwrap();
     }
+
+    // finalize measurement
+    tdx_vm.finalize().unwrap();
+
+    // run the vCPU
+
+    // TDX will not allow the host to access private memory. In this case, we
+    // are trying to jump to address 0x1000 which we haven't mapped anything
+    // to. Therefore, we shouldn't be able to access this area of memory, which
+    // should cause a MemoryFault.
+    let ret = tdx_vcpu.fd.run();
+    assert!(matches!(
+        ret,
+        Ok(kvm_ioctls::VcpuExit::MemoryFault {
+            flags: 8,
+            gpa: 0x1000,
+            size: 0x1000
+        })
+    ))
 }
 
 /// Round number down to multiple
