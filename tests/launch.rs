@@ -75,3 +75,43 @@ pub fn mmap_activate(
 
     unsafe { libc::mmap(ptr, size, prot, flags | map_synced_flags, fd, map_offset) }
 }
+
+/// A mmap() abstraction to map guest RAM, simplifying the flag handling, taking care of
+/// alignment requirements and installing guard pages.
+pub fn ram_mmap(size: u64) -> u64 {
+    const ALIGN: u64 = 4096;
+    const GUARD_PAGE_SIZE: u64 = 4096;
+    let mut total = size + ALIGN;
+    let guard_addr = mmap_reserve(total as usize, -1);
+    if guard_addr == libc::MAP_FAILED {
+        panic!("MMAP activate failed");
+    }
+    assert!(ALIGN.is_power_of_two());
+    assert!(ALIGN >= GUARD_PAGE_SIZE);
+
+    let offset = align_up(guard_addr as usize, ALIGN as usize) - guard_addr as usize;
+
+    let addr = mmap_activate(guard_addr.wrapping_add(offset), size as usize, -1, 0, 0);
+
+    if addr == libc::MAP_FAILED {
+        unsafe { libc::munmap(guard_addr, total as usize) };
+        panic!("MMAP activate failed");
+    }
+
+    if offset > 0 {
+        unsafe { libc::munmap(guard_addr, offset as usize) };
+    }
+
+    total -= offset as u64;
+    if total > size + GUARD_PAGE_SIZE {
+        unsafe {
+            libc::munmap(
+                addr.wrapping_add(size as usize)
+                    .wrapping_add(GUARD_PAGE_SIZE as usize),
+                (total - size - GUARD_PAGE_SIZE) as usize,
+            )
+        };
+    }
+
+    addr as u64
+}
