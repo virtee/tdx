@@ -19,3 +19,6 @@ kvm-ioctls = { git = "https://github.com/virtee/kvm-ioctls.git", branch = "main"
 libc = "0.2.155"
 uuid = "1.8.0"
 vmm-sys-util = "0.12.1"
+
+[patch.crates-io]
+kvm-bindings = { git = "https://www.github.com/rust-vmm/kvm-bindings.git", branch = "main"}
