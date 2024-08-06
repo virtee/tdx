@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use kvm_ioctls::Kvm;
+use vmm_sys_util::*;
 
 use tdx::launch::{TdxVcpu, TdxVm};
 use tdx::tdvf;
@@ -114,4 +115,13 @@ pub fn ram_mmap(size: u64) -> u64 {
     }
 
     addr as u64
+}
+
+// NOTE(jakecorrenti): This IOCTL needs to get re-implemented manually. We need to check if KVM_CAP_MEMORY_MAPPING
+// and KVM_CAP_GUEST_MEMFD are supported on the host, but those values are not present in rust-vmm/kvm-{ioctls, bindings}
+ioctl_io_nr!(KVM_CHECK_EXTENSION, kvm_bindings::KVMIO, 0x03);
+
+fn check_extension(i: u32) -> bool {
+    let kvm = Kvm::new().unwrap();
+    (unsafe { ioctl::ioctl_with_val(&kvm, KVM_CHECK_EXTENSION(), i.into()) }) > 0
 }
