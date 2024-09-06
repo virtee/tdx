@@ -6,21 +6,17 @@ use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
 use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
-use kvm_ioctls::{Kvm, VmFd};
+use kvm_ioctls::VmFd;
 
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
-const KVM_X86_TDX_VM: u64 = 2;
+pub const KVM_X86_TDX_VM: u64 = 2;
 
 /// Handle to the TDX VM file descriptor
-pub struct TdxVm {
-    pub fd: VmFd,
-}
+pub struct TdxVm {}
 
 impl TdxVm {
     /// Create a new TDX VM with KVM
-    pub fn new(kvm_fd: &Kvm, max_vcpus: u64) -> Result<Self, TdxError> {
-        let vm_fd = kvm_fd.create_vm_with_type(KVM_X86_TDX_VM)?;
-
+    pub fn new(vm_fd: &VmFd, max_vcpus: u64) -> Result<Self, TdxError> {
         // TDX requires that MAX_VCPUS and SPLIT_IRQCHIP be set
         let mut cap: kvm_enable_cap = kvm_enable_cap {
             cap: KVM_CAP_MAX_VCPUS,
@@ -37,16 +33,16 @@ impl TdxVm {
         cap.args[0] = (1 << 0) | (1 << 1);
         vm_fd.enable_cap(&cap).unwrap();
 
-        Ok(Self { fd: vm_fd })
+        Ok(Self {})
     }
 
     /// Retrieve information about the Intel TDX module
-    pub fn get_capabilities(&self) -> Result<TdxCapabilities, TdxError> {
+    pub fn get_capabilities(&self, fd: &VmFd) -> Result<TdxCapabilities, TdxError> {
         let caps = Capabilities::default();
         let mut cmd: Cmd<Capabilities> = Cmd::from(CmdId::GetCapabilities, &caps);
 
         unsafe {
-            self.fd.encrypt_op(&mut cmd)?;
+            fd.encrypt_op(&mut cmd)?;
         }
 
         Ok(TdxCapabilities {
@@ -64,10 +60,7 @@ impl TdxVm {
     }
 
     /// Do additional VM initialization that is specific to Intel TDX
-    pub fn init_vm(&self, kvm_fd: &Kvm) -> Result<(), TdxError> {
-        let cpuid = kvm_fd
-            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
-            .unwrap();
+    pub fn init_vm(&self, fd: &VmFd, cpuid: kvm_bindings::CpuId) -> Result<(), TdxError> {
         let mut cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> = cpuid.as_slice().to_vec();
 
         // resize to 256 entries to make sure that InitVm is 8KB
@@ -76,7 +69,7 @@ impl TdxVm {
         let init_vm = InitVm::new(&cpuid_entries);
         let mut cmd: Cmd<InitVm> = Cmd::from(CmdId::InitVm, &init_vm);
         unsafe {
-            self.fd.encrypt_op(&mut cmd)?;
+            fd.encrypt_op(&mut cmd)?;
         }
 
         Ok(())
@@ -85,6 +78,7 @@ impl TdxVm {
     /// Encrypt a memory continuous region
     pub fn init_mem_region(
         &self,
+        fd: &VmFd,
         gpa: u64,
         nr_pages: u64,
         attributes: u32,
@@ -107,17 +101,17 @@ impl TdxVm {
         };
 
         unsafe {
-            self.fd.encrypt_op(&mut cmd)?;
+            fd.encrypt_op(&mut cmd)?;
         }
 
         Ok(())
     }
 
     /// Complete measurement of the initial TD contents and mark it ready to run
-    pub fn finalize(&self) -> Result<(), TdxError> {
+    pub fn finalize(&self, fd: &VmFd) -> Result<(), TdxError> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::FinalizeVm, &0);
         unsafe {
-            self.fd.encrypt_op(&mut cmd)?;
+            fd.encrypt_op(&mut cmd)?;
         }
 
         Ok(())
@@ -280,40 +274,17 @@ ioctl_iowr_nr!(
     std::os::raw::c_ulong
 );
 
-pub struct TdxVcpu<'a> {
-    pub fd: &'a mut kvm_ioctls::VcpuFd,
-}
+pub struct TdxVcpu {}
 
-impl<'a> TdxVcpu<'a> {
-    pub fn init(&self, hob_address: u64) -> Result<(), TdxError> {
+impl TdxVcpu {
+    pub fn init(fd: &kvm_ioctls::VcpuFd, hob_address: u64) -> Result<(), TdxError> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::InitVcpu, &hob_address);
-        let ret = unsafe { ioctl::ioctl_with_mut_ptr(self.fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
+        let ret = unsafe { ioctl::ioctl_with_mut_ptr(fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
         if ret < 0 {
             // can't return `ret` because it will just return -1 and not give the error
             // code. `cmd.error` will also just be 0.
             return Err(TdxError::from(errno::Error::last()));
         }
         Ok(())
-    }
-}
-
-impl<'a> TryFrom<(&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm)> for TdxVcpu<'a> {
-    type Error = TdxError;
-
-    fn try_from(
-        value: (&'a mut kvm_ioctls::VcpuFd, &'a mut kvm_ioctls::Kvm),
-    ) -> Result<Self, Self::Error> {
-        // need to enable the X2APIC bit for CPUID[0x1] so that the kernel can call
-        // KVM_SET_MSRS(MSR_IA32_APIC_BASE) without failing
-        let mut cpuid = value
-            .1
-            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)?;
-        for entry in cpuid.as_mut_slice().iter_mut() {
-            if entry.index == 0x1 {
-                entry.ecx &= 1 << 21;
-            }
-        }
-        value.0.set_cpuid2(&cpuid)?;
-        Ok(Self { fd: value.0 })
     }
 }
