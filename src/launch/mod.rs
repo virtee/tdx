@@ -3,7 +3,7 @@
 mod linux;
 
 use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
-use linux::{Capabilities, Cmd, CpuidConfig, InitVm, TdxError};
+use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
@@ -40,7 +40,7 @@ impl TdxVm {
     /// Retrieve information about the Intel TDX module
     pub fn get_capabilities(&self) -> Result<TdxCapabilities, TdxError> {
         let caps = Capabilities::default();
-        let mut cmd: Cmd = Cmd::from(&caps);
+        let mut cmd: Cmd<Capabilities> = Cmd::from(CmdId::GetCapabilities, &caps);
 
         unsafe {
             self.fd.encrypt_op(&mut cmd)?;
@@ -109,7 +109,8 @@ impl TdxVm {
             }
         }
 
-        let mut cmd = Cmd::from(&InitVm::new(&cpuid_entries));
+        let init_vm = InitVm::new(&cpuid_entries);
+        let mut cmd: Cmd<InitVm> = Cmd::from(CmdId::InitVm, &init_vm);
         unsafe {
             self.fd.encrypt_op(&mut cmd)?;
         }
@@ -280,13 +281,7 @@ pub struct TdxVcpu<'a> {
 
 impl<'a> TdxVcpu<'a> {
     pub fn init(&self, hob_address: u64) -> Result<(), TdxError> {
-        let mut cmd = Cmd {
-            id: linux::CmdId::InitVcpu as u32,
-            flags: 0,
-            data: hob_address as *const u64 as _,
-            error: 0,
-            _unused: 0,
-        };
+        let mut cmd: Cmd<u64> = Cmd::from(CmdId::InitVcpu, &hob_address);
         let ret = unsafe { ioctl::ioctl_with_mut_ptr(self.fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
         if ret < 0 {
             // can't return `ret` because it will just return -1 and not give the error
