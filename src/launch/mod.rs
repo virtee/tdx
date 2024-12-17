@@ -3,11 +3,10 @@
 mod linux;
 
 use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
-use linux::{Capabilities, Cmd, CpuidConfig, InitVm, TdxError};
+use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
 use kvm_ioctls::{Kvm, VmFd};
-use std::arch::x86_64;
 
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
 const KVM_X86_TDX_VM: u64 = 2;
@@ -34,13 +33,17 @@ impl TdxVm {
         cap.args[0] = 24;
         vm_fd.enable_cap(&cap).unwrap();
 
+        cap.cap = kvm_bindings::KVM_CAP_X2APIC_API;
+        cap.args[0] = (1 << 0) | (1 << 1);
+        vm_fd.enable_cap(&cap).unwrap();
+
         Ok(Self { fd: vm_fd })
     }
 
     /// Retrieve information about the Intel TDX module
     pub fn get_capabilities(&self) -> Result<TdxCapabilities, TdxError> {
         let caps = Capabilities::default();
-        let mut cmd: Cmd = Cmd::from(&caps);
+        let mut cmd: Cmd<Capabilities> = Cmd::from(CmdId::GetCapabilities, &caps);
 
         unsafe {
             self.fd.encrypt_op(&mut cmd)?;
@@ -61,7 +64,7 @@ impl TdxVm {
     }
 
     /// Do additional VM initialization that is specific to Intel TDX
-    pub fn init_vm(&self, kvm_fd: &Kvm, caps: &TdxCapabilities) -> Result<(), TdxError> {
+    pub fn init_vm(&self, kvm_fd: &Kvm) -> Result<(), TdxError> {
         let cpuid = kvm_fd
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .unwrap();
@@ -70,46 +73,63 @@ impl TdxVm {
         // resize to 256 entries to make sure that InitVm is 8KB
         cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
 
-        // hex for Ob1100000001011111111 based on the XSAVE state-components architecture
-        let xcr0_mask = 0x602ff;
-        // hex for 0b11111110100000000 based on the XSAVE state-components architecture
-        let xss_mask = 0x1FD00;
-
-        let xfam_fixed0 = caps.xfam.fixed0.bits();
-        let xfam_fixed1 = caps.xfam.fixed1.bits();
-
         // patch cpuid
         for entry in cpuid_entries.as_mut_slice() {
-            // mandatory patches for TDX based on XFAM values reported by TdxCapabilities
-            match entry.index {
-                // XSAVE features and state-components
-                0xD => {
-                    if entry.index == 0 {
-                        // XSAVE XCR0 LO
-                        entry.eax &= (xfam_fixed0 as u32) & (xcr0_mask as u32);
-                        entry.eax |= (xfam_fixed1 as u32) & (xcr0_mask as u32);
-                        // XSAVE XCR0 HI
-                        entry.edx &= ((xfam_fixed0 & xcr0_mask) >> 32) as u32;
-                        entry.edx |= ((xfam_fixed1 & xcr0_mask) >> 32) as u32;
-                    } else if entry.index == 1 {
-                        // XSAVE XCR0 LO
-                        entry.ecx &= (xfam_fixed0 as u32) & (xss_mask as u32);
-                        entry.ecx |= (xfam_fixed1 as u32) & (xss_mask as u32);
-                        // XSAVE XCR0 HI
-                        entry.edx &= ((xfam_fixed0 & xss_mask) >> 32) as u32;
-                        entry.edx |= ((xfam_fixed1 & xss_mask) >> 32) as u32;
-                    }
+            if entry.function == 0xD && entry.index == 0 {
+                const XFEATURE_MASK_XTILE: u32 = (1 << 17) | (1 << 18);
+                if (entry.eax & XFEATURE_MASK_XTILE) != XFEATURE_MASK_XTILE {
+                    entry.eax &= !XFEATURE_MASK_XTILE;
                 }
-                0x8000_0008 => {
-                    // host physical address bits supported
-                    let phys_bits = unsafe { x86_64::__cpuid(0x8000_0008).eax } & 0xff;
-                    entry.eax = (entry.eax & 0xffff_ff00) | (phys_bits & 0xff);
+            }
+
+            if entry.function == 0xD && entry.index == 1 {
+                entry.ecx &= !(1 << 15);
+                const XFEATURE_MASK_CET: u32 = (1 << 11) | (1 << 12);
+                if entry.ecx & XFEATURE_MASK_CET > 0 {
+                    entry.ecx |= XFEATURE_MASK_CET;
                 }
-                _ => (),
             }
         }
 
-        let mut cmd = Cmd::from(&InitVm::new(&cpuid_entries));
+        let init_vm = InitVm::new(&cpuid_entries);
+        let mut cmd: Cmd<InitVm> = Cmd::from(CmdId::InitVm, &init_vm);
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
+
+    /// Encrypt a memory continuous region
+    pub fn init_mem_region(
+        &self,
+        gpa: u64,
+        nr_pages: u64,
+        attributes: u32,
+        source_addr: u64,
+    ) -> Result<(), TdxError> {
+        const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
+        let mem_region = linux::TdxInitMemRegion {
+            source_addr,
+            gpa,
+            nr_pages,
+        };
+
+        let mut cmd: Cmd<linux::TdxInitMemRegion> = Cmd::from(CmdId::InitMemRegion, &mem_region);
+
+        // determines if we also extend the measurement
+        cmd.flags = ((attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND) > 0) as u32;
+
+        unsafe {
+            self.fd.encrypt_op(&mut cmd)?;
+        }
+
+        Ok(())
+    }
+
+    /// Complete measurement of the initial TD contents and mark it ready to run
+    pub fn finalize(&self) -> Result<(), TdxError> {
+        let mut cmd: Cmd<u64> = Cmd::from(CmdId::FinalizeVm, &0);
         unsafe {
             self.fd.encrypt_op(&mut cmd)?;
         }
@@ -280,13 +300,7 @@ pub struct TdxVcpu<'a> {
 
 impl<'a> TdxVcpu<'a> {
     pub fn init(&self, hob_address: u64) -> Result<(), TdxError> {
-        let mut cmd = Cmd {
-            id: linux::CmdId::InitVcpu as u32,
-            flags: 0,
-            data: hob_address as *const u64 as _,
-            error: 0,
-            _unused: 0,
-        };
+        let mut cmd: Cmd<u64> = Cmd::from(CmdId::InitVcpu, &hob_address);
         let ret = unsafe { ioctl::ioctl_with_mut_ptr(self.fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
         if ret < 0 {
             // can't return `ret` because it will just return -1 and not give the error

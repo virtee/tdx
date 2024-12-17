@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::marker::PhantomData;
+
 pub const NR_CPUID_CONFIGS: usize = 12;
 
 /// Trust Domain eXtensions sub-ioctl() commands
@@ -8,13 +10,15 @@ pub enum CmdId {
     GetCapabilities,
     InitVm,
     InitVcpu,
+    InitMemRegion,
+    FinalizeVm,
 }
 
 /// Contains information for the sub-ioctl() command to be run. This is
 /// equivalent to `struct kvm_tdx_cmd` in the kernel.
 #[derive(Default)]
 #[repr(C)]
-pub struct Cmd {
+pub struct Cmd<'a, T: 'a> {
     /// TDX command identifier
     pub id: u32,
 
@@ -31,6 +35,21 @@ pub struct Cmd {
 
     /// Reserved.
     pub _unused: u64,
+
+    _phantom: PhantomData<&'a T>,
+}
+
+impl<'a, T: 'a> Cmd<'a, T> {
+    pub fn from(id: CmdId, data: &'a T) -> Self {
+        Self {
+            id: id as u32,
+            flags: 0,
+            data: data as *const T as _,
+            error: 0,
+            _unused: 0,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -159,18 +178,6 @@ impl Default for Capabilities {
     }
 }
 
-impl From<&Capabilities> for Cmd {
-    fn from(caps: &Capabilities) -> Self {
-        Self {
-            id: CmdId::GetCapabilities as u32,
-            flags: 0,
-            data: caps as *const Capabilities as _,
-            error: 0,
-            _unused: 0,
-        }
-    }
-}
-
 /// TDX specific VM initialization information
 #[derive(Debug)]
 #[repr(C)]
@@ -227,14 +234,15 @@ impl Default for InitVm {
     }
 }
 
-impl From<&InitVm> for Cmd {
-    fn from(init_vm: &InitVm) -> Self {
-        Self {
-            id: CmdId::InitVm as u32,
-            flags: 0,
-            data: init_vm as *const InitVm as _,
-            error: 0,
-            _unused: 0,
-        }
-    }
+#[repr(C)]
+#[derive(Debug)]
+pub struct TdxInitMemRegion {
+    /// Host physical address of the target page to be added to the TD
+    pub source_addr: u64,
+
+    /// Guest physical address to be mapped
+    pub gpa: u64,
+
+    /// Number of pages to be mapped
+    pub nr_pages: u64,
 }
