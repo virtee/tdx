@@ -20,7 +20,17 @@ fn launch() {
 
     // create vm
     let mut kvm_fd = Kvm::new().unwrap();
-    let vm_fd = kvm_fd.create_vm_with_type(tdx::launch::KVM_X86_TDX_VM).unwrap();
+    let vm_fd = kvm_fd
+        .create_vm_with_type(tdx::launch::KVM_X86_TDX_VM)
+        .unwrap();
+
+    let mut cap: kvm_bindings::kvm_enable_cap = kvm_bindings::kvm_enable_cap {
+        ..Default::default()
+    };
+    cap.cap = kvm_bindings::KVM_CAP_SPLIT_IRQCHIP;
+    cap.args[0] = 24;
+    vm_fd.enable_cap(&cap).unwrap();
+
     let tdx_vm = TdxVm::new(&vm_fd, 100).unwrap();
     let _caps = tdx_vm.get_capabilities(&vm_fd).unwrap();
     let cpuid = kvm_fd
