@@ -2,14 +2,14 @@
 
 mod linux;
 
-use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS, KVM_CAP_SPLIT_IRQCHIP};
+use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS};
 use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
 
 use bitflags::bitflags;
 use kvm_ioctls::VmFd;
 
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
-pub const KVM_X86_TDX_VM: u64 = 2;
+pub const KVM_X86_TDX_VM: u64 = 5;
 
 /// Handle to the TDX VM file descriptor
 pub struct TdxVm {}
@@ -23,10 +23,6 @@ impl TdxVm {
             ..Default::default()
         };
         cap.args[0] = max_vcpus;
-        vm_fd.enable_cap(&cap).unwrap();
-
-        cap.cap = KVM_CAP_SPLIT_IRQCHIP;
-        cap.args[0] = 24;
         vm_fd.enable_cap(&cap).unwrap();
 
         cap.cap = kvm_bindings::KVM_CAP_X2APIC_API;

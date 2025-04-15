@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-pub const NR_CPUID_CONFIGS: usize = 12;
+pub const NR_CPUID_CONFIGS: usize = 24;
 
 /// Trust Domain eXtensions sub-ioctl() commands
 #[repr(u32)]
