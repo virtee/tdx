@@ -11,21 +11,45 @@ use kvm_ioctls::VmFd;
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
 pub const KVM_X86_TDX_VM: u64 = 5;
 
+// Returns a `Vec<T>` with a size in bytes at least as large as `size_in_bytes`.
+fn vec_with_size_in_bytes<T: Default>(size_in_bytes: usize) -> Vec<T> {
+    let rounded_size = size_in_bytes.div_ceil(size_of::<T>());
+    let mut v = Vec::with_capacity(rounded_size);
+    v.resize_with(rounded_size, T::default);
+    v
+}
+
+// The kvm API has many structs that resemble the following `Foo` structure:
+//
+// ```
+// #[repr(C)]
+// struct Foo {
+//    some_data: u32
+//    entries: __IncompleteArrayField<__u32>,
+// }
+// ```
+//
+// In order to allocate such a structure, `size_of::<Foo>()` would be too small because it would not
+// include any space for `entries`. To make the allocation large enough while still being aligned
+// for `Foo`, a `Vec<Foo>` is created. Only the first element of `Vec<Foo>` would actually be used
+// as a `Foo`. The remaining memory in the `Vec<Foo>` is for `entries`, which must be contiguous
+// with `Foo`. This function is used to make the `Vec<Foo>` with enough space for `count` entries.
+pub fn vec_with_array_field<T: Default, F>(count: usize) -> Vec<T> {
+    let element_space = count * std::mem::size_of::<F>();
+    let vec_size_bytes = std::mem::size_of::<T>() + element_space;
+    vec_with_size_in_bytes(vec_size_bytes)
+}
+
 /// Handle to the TDX VM file descriptor
 pub struct TdxVm {}
 
 impl TdxVm {
     /// Create a new TDX VM with KVM
-    pub fn new(vm_fd: &VmFd, max_vcpus: u64) -> Result<Self, TdxError> {
-        // TDX requires that MAX_VCPUS and SPLIT_IRQCHIP be set
+    pub fn new(vm_fd: &VmFd) -> Result<Self, TdxError> {
         let mut cap: kvm_enable_cap = kvm_enable_cap {
-            cap: KVM_CAP_MAX_VCPUS,
+            cap: kvm_bindings::KVM_CAP_X2APIC_API,
             ..Default::default()
         };
-        cap.args[0] = max_vcpus;
-        vm_fd.enable_cap(&cap).unwrap();
-
-        cap.cap = kvm_bindings::KVM_CAP_X2APIC_API;
         cap.args[0] = (1 << 0) | (1 << 1);
         vm_fd.enable_cap(&cap).unwrap();
 
