@@ -10,7 +10,7 @@ description = "Library for Intel TDX"
 readme = "README.md"
 keywords = ["intel", "sgx", "tdx"]
 categories = ["os", "os::linux-apis", "hardware-support"]
-rust-version = "1.71"
+rust-version = "1.86"
 
 [dependencies]
 bitflags = "2.4.2"
