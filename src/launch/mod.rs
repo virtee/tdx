@@ -192,13 +192,13 @@ impl TdxVm {
         source_addr: u64,
     ) -> Result<(), TdxError> {
         const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
-        let mem_region = linux::TdxInitMemRegion {
+        let mem_region = kvm_tdx_init_mem_region {
             source_addr,
             gpa,
             nr_pages,
         };
 
-        let mut cmd: Cmd<linux::TdxInitMemRegion> = Cmd::from(CmdId::InitMemRegion, &mem_region);
+        let mut cmd: Cmd<kvm_tdx_init_mem_region> = Cmd::from(CmdId::InitMemRegion, &mem_region);
 
         // determines if we also extend the measurement
         cmd.flags = if attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
