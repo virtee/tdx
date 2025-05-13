@@ -101,19 +101,85 @@ impl TdxVm {
     }
 
     /// Do additional VM initialization that is specific to Intel TDX
-    pub fn init_vm(&self, fd: &VmFd, cpuid: kvm_bindings::CpuId) -> Result<(), TdxError> {
-        let mut cpuid_entries: Vec<kvm_bindings::kvm_cpuid_entry2> = cpuid.as_slice().to_vec();
+    pub fn init_vm(
+        &self,
+        fd: &VmFd,
+        caps: &TdxCapabilities,
+        cpuid: kvm_bindings::CpuId,
+    ) -> Result<(), TdxError> {
+        let mut defaults: Vec<kvm_bindings::kvm_cpuid_entry2> = cpuid.as_slice().to_vec();
+        defaults.resize(
+            kvm_bindings::KVM_MAX_CPUID_ENTRIES,
+            kvm_bindings::kvm_cpuid_entry2::default(),
+        );
 
-        // resize to 256 entries to make sure that InitVm is 8KB
-        cpuid_entries.resize(256, kvm_bindings::kvm_cpuid_entry2::default());
+        let mut entries = vec_with_array_field::<kvm_tdx_init_vm, kvm_bindings::kvm_cpuid_entry2>(
+            kvm_bindings::KVM_MAX_CPUID_ENTRIES,
+        );
+        entries[0].cpuid.nent = defaults.len() as u32;
+        entries[0].cpuid.padding = 0;
+        entries[0].attributes = caps.attributes.bits();
+        entries[0].xfam = caps.xfam.bits();
+        unsafe {
+            let entries_slice: &mut [kvm_bindings::kvm_cpuid_entry2] = entries[0]
+                .cpuid
+                .entries
+                .as_mut_slice(kvm_bindings::KVM_MAX_CPUID_ENTRIES);
+            entries_slice.copy_from_slice(defaults.as_slice());
+        }
 
-        let init_vm = InitVm::new(&cpuid_entries);
-        let mut cmd: Cmd<InitVm> = Cmd::from(CmdId::InitVm, &init_vm);
+        Self::tdx_filter_cpuid(&mut entries[0].cpuid, &caps.cpuid_configs);
+
+        let mut cmd: Cmd<kvm_tdx_init_vm> = Cmd::from(CmdId::InitVm, &entries[0]);
         unsafe {
             fd.encrypt_op(&mut cmd)?;
         }
 
         Ok(())
+    }
+
+    fn tdx_filter_cpuid(
+        cpuids: &mut kvm_bindings::kvm_cpuid2,
+        caps: &Vec<kvm_bindings::kvm_cpuid_entry2>,
+    ) {
+        let mut found = Vec::new();
+        let entries = unsafe { cpuids.entries.as_mut_slice(cpuids.nent as usize) };
+        for entry in &*entries {
+            let conf = Self::cpuid_find_entry(caps, entry.function, entry.index);
+            if conf.is_none() {
+                continue;
+            }
+            let conf = conf.unwrap();
+
+            found.push(kvm_bindings::kvm_cpuid_entry2 {
+                function: entry.function,
+                index: entry.index,
+                flags: entry.flags,
+                eax: entry.eax & conf.eax,
+                ebx: entry.ebx & conf.ebx,
+                ecx: entry.ecx & conf.ecx,
+                edx: entry.edx & conf.edx,
+                ..Default::default()
+            });
+        }
+
+        for (i, entry) in found.iter().enumerate() {
+            entries[i] = *entry;
+        }
+        cpuids.nent = found.len() as u32;
+    }
+
+    fn cpuid_find_entry(
+        entries: &Vec<kvm_bindings::kvm_cpuid_entry2>,
+        function: u32,
+        index: u32,
+    ) -> Option<kvm_bindings::kvm_cpuid_entry2> {
+        for entry in entries {
+            if entry.function == function && entry.index == index {
+                return Some(*entry);
+            }
+        }
+        None
     }
 
     /// Encrypt a memory continuous region
