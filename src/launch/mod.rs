@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+mod bindings;
 mod linux;
 
-use kvm_bindings::{kvm_enable_cap, KVM_CAP_MAX_VCPUS};
-use linux::{Capabilities, Cmd, CmdId, CpuidConfig, InitVm, TdxError};
+use bindings::{kvm_tdx_capabilities, kvm_tdx_init_mem_region, kvm_tdx_init_vm};
+use kvm_bindings::kvm_enable_cap;
+use linux::{Cmd, CmdId, TdxError, NR_CPUID_CONFIGS};
 
 use bitflags::bitflags;
 use kvm_ioctls::VmFd;
@@ -58,24 +60,43 @@ impl TdxVm {
 
     /// Retrieve information about the Intel TDX module
     pub fn get_capabilities(&self, fd: &VmFd) -> Result<TdxCapabilities, TdxError> {
-        let caps = Capabilities::default();
-        let mut cmd: Cmd<Capabilities> = Cmd::from(CmdId::GetCapabilities, &caps);
+        let mut caps = kvm_tdx_capabilities::default();
+
+        let mut defaults = Vec::with_capacity(NR_CPUID_CONFIGS);
+        (0..NR_CPUID_CONFIGS)
+            .for_each(|_| defaults.push(kvm_bindings::kvm_cpuid_entry2::default()));
+        let mut cpuid_entries = vec_with_array_field::<
+            kvm_tdx_capabilities,
+            kvm_bindings::kvm_cpuid_entry2,
+        >(NR_CPUID_CONFIGS);
+        cpuid_entries[0].cpuid.nent = NR_CPUID_CONFIGS as u32;
+        cpuid_entries[0].cpuid.padding = 0;
+        unsafe {
+            let cpuid_entries_slice: &mut [kvm_bindings::kvm_cpuid_entry2] = cpuid_entries[0]
+                .cpuid
+                .entries
+                .as_mut_slice(NR_CPUID_CONFIGS);
+            cpuid_entries_slice.copy_from_slice(defaults.as_slice());
+        }
+        caps.cpuid.nent = NR_CPUID_CONFIGS as u32;
+        caps.cpuid.padding = 0;
+        let mut cmd: Cmd<kvm_tdx_capabilities> =
+            Cmd::from(CmdId::GetCapabilities, &cpuid_entries[0]);
 
         unsafe {
             fd.encrypt_op(&mut cmd)?;
         }
 
         Ok(TdxCapabilities {
-            attributes: Attributes {
-                fixed0: AttributesFlags::from_bits_truncate(caps.attrs_fixed0),
-                fixed1: AttributesFlags::from_bits_truncate(caps.attrs_fixed1),
+            attributes: AttributesFlags::from_bits_truncate(cpuid_entries[0].supported_attrs),
+            xfam: XFAMFlags::from_bits_truncate(cpuid_entries[0].supported_xfam),
+            cpuid_configs: unsafe {
+                cpuid_entries[0]
+                    .cpuid
+                    .entries
+                    .as_slice(cpuid_entries[0].cpuid.nent as usize)
+                    .to_vec()
             },
-            xfam: Xfam {
-                fixed0: XFAMFlags::from_bits_truncate(caps.xfam_fixed0),
-                fixed1: XFAMFlags::from_bits_truncate(caps.xfam_fixed1),
-            },
-            supported_gpaw: caps.supported_gpaw,
-            cpuid_configs: Vec::from(caps.cpuid_configs),
         })
     }
 
@@ -257,31 +278,12 @@ bitflags! {
     }
 }
 
-/// Reflects the Intel TDX module capabilities and configuration and CPU
-/// capabilities
-#[derive(Debug)]
-pub struct Attributes {
-    pub fixed0: AttributesFlags,
-    pub fixed1: AttributesFlags,
-}
-
-/// Determines the set of extended features available for use by the guest TD
-#[derive(Debug)]
-pub struct Xfam {
-    pub fixed0: XFAMFlags,
-    pub fixed1: XFAMFlags,
-}
-
 /// Provides information about the Intel TDX module
 #[derive(Debug)]
 pub struct TdxCapabilities {
-    pub attributes: Attributes,
-    pub xfam: Xfam,
-
-    /// supported Guest Physical Address Width
-    pub supported_gpaw: u32,
-
-    pub cpuid_configs: Vec<CpuidConfig>,
+    pub attributes: AttributesFlags,
+    pub xfam: XFAMFlags,
+    pub cpuid_configs: Vec<kvm_bindings::kvm_cpuid_entry2>,
 }
 
 /// Manually create the wrapper for KVM_MEMORY_ENCRYPT_OP since `kvm_ioctls` doesn't
