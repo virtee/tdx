@@ -33,9 +33,6 @@ pub struct Cmd<'a, T: 'a> {
     /// code in addition to -Exxx.
     pub error: u64,
 
-    /// Reserved.
-    pub _unused: u64,
-
     _phantom: PhantomData<&'a T>,
 }
 
@@ -46,7 +43,6 @@ impl<'a, T: 'a> Cmd<'a, T> {
             flags: 0,
             data: data as *const T as _,
             error: 0,
-            _unused: 0,
             _phantom: PhantomData,
         }
     }
