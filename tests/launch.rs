@@ -122,9 +122,7 @@ fn launch() {
         // TODO(jakecorrenti): the current CentOS SIG doesn't support the KVM_MEMORY_MAPPING or
         // KVM_TDX_EXTEND_MEMORY ioctls, which is what we would typically use here.
     } else {
-        tdx_vm
-            .init_mem_region(&vm_fd, guest_addr, 1, 1, firmware_userspace)
-            .unwrap();
+        TdxVcpu::init_mem_region(&vcpufd, guest_addr, 1, 1, firmware_userspace).unwrap();
     }
 
     // finalize measurement
