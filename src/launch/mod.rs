@@ -182,38 +182,6 @@ impl TdxVm {
         None
     }
 
-    /// Encrypt a memory continuous region
-    pub fn init_mem_region(
-        &self,
-        fd: &VmFd,
-        gpa: u64,
-        nr_pages: u64,
-        attributes: u32,
-        source_addr: u64,
-    ) -> Result<(), TdxError> {
-        const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
-        let mem_region = kvm_tdx_init_mem_region {
-            source_addr,
-            gpa,
-            nr_pages,
-        };
-
-        let mut cmd: Cmd<kvm_tdx_init_mem_region> = Cmd::from(CmdId::InitMemRegion, &mem_region);
-
-        // determines if we also extend the measurement
-        cmd.flags = if attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
-            1
-        } else {
-            0
-        };
-
-        unsafe {
-            fd.encrypt_op(&mut cmd)?;
-        }
-
-        Ok(())
-    }
-
     /// Complete measurement of the initial TD contents and mark it ready to run
     pub fn finalize(&self, fd: &VmFd) -> Result<(), TdxError> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::FinalizeVm, &0);
@@ -373,6 +341,40 @@ impl TdxVcpu {
             // code. `cmd.error` will also just be 0.
             return Err(TdxError::from(errno::Error::last()));
         }
+        Ok(())
+    }
+
+    /// Encrypt a memory continuous region
+    pub fn init_mem_region(
+        fd: &kvm_ioctls::VcpuFd,
+        gpa: u64,
+        nr_pages: u64,
+        attributes: u32,
+        source_addr: u64,
+    ) -> Result<(), TdxError> {
+        const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
+        let mem_region = kvm_tdx_init_mem_region {
+            source_addr,
+            gpa,
+            nr_pages,
+        };
+
+        let mut cmd: Cmd<kvm_tdx_init_mem_region> = Cmd::from(CmdId::InitMemRegion, &mem_region);
+
+        // determines if we also extend the measurement
+        cmd.flags = if attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
+            1
+        } else {
+            0
+        };
+
+        let ret = unsafe { ioctl::ioctl_with_mut_ptr(fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
+        if ret < 0 {
+            // can't return `ret` because it will just return -1 and not give the error
+            // code. `cmd.error` will also just be 0.
+            return Err(TdxError::from(errno::Error::last()));
+        }
+
         Ok(())
     }
 }
