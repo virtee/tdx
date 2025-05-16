@@ -19,7 +19,7 @@ fn launch() {
     const KVM_CAP_MEMORY_MAPPING: u32 = 236;
 
     // create vm
-    let mut kvm_fd = Kvm::new().unwrap();
+    let kvm_fd = Kvm::new().unwrap();
     let vm_fd = kvm_fd
         .create_vm_with_type(tdx::launch::KVM_X86_TDX_VM)
         .unwrap();
@@ -31,12 +31,12 @@ fn launch() {
     cap.args[0] = 24;
     vm_fd.enable_cap(&cap).unwrap();
 
-    let tdx_vm = TdxVm::new(&vm_fd, 100).unwrap();
+    let tdx_vm = TdxVm::new(&vm_fd).unwrap();
     let _caps = tdx_vm.get_capabilities(&vm_fd).unwrap();
     let cpuid = kvm_fd
         .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
         .unwrap();
-    let _ = tdx_vm.init_vm(&vm_fd, cpuid).unwrap();
+    let _ = tdx_vm.init_vm(&vm_fd, &_caps, cpuid).unwrap();
 
     // get tdvf sections
     let mut firmware = std::fs::File::open("/usr/share/edk2/ovmf/OVMF.inteltdx.fd").unwrap();
@@ -45,7 +45,9 @@ fn launch() {
 
     // create vcpu
     let mut vcpufd = vm_fd.create_vcpu(10).unwrap();
-    let mut cpuid = kvm_fd.get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES).unwrap();
+    let mut cpuid = kvm_fd
+        .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+        .unwrap();
     // set the X2APIC bit for CPUID[0x1] so the kernel can call KVM_SET_MSRS without failing
     for entry in cpuid.as_mut_slice().iter_mut() {
         if entry.index == 0x1 {
@@ -120,9 +122,7 @@ fn launch() {
         // TODO(jakecorrenti): the current CentOS SIG doesn't support the KVM_MEMORY_MAPPING or
         // KVM_TDX_EXTEND_MEMORY ioctls, which is what we would typically use here.
     } else {
-        tdx_vm
-            .init_mem_region(&vm_fd, guest_addr, 1, 1, firmware_userspace)
-            .unwrap();
+        TdxVcpu::init_mem_region(&vcpufd, guest_addr, 1, 1, firmware_userspace).unwrap();
     }
 
     // finalize measurement
