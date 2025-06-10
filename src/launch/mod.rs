@@ -51,10 +51,18 @@ pub fn vec_with_array_field<T: Default, F>(count: usize) -> Vec<T> {
     vec_with_size_in_bytes(vec_size_bytes)
 }
 
+/// Represents the memory region to be initialized by KVM_TDX_INIT_MEM_REGION
 pub struct MemRegion {
+    /// starting guest address of private memory
     pub gpa: u64,
+
+    /// number of pages to initialize
     pub nr_pages: u64,
+
+    /// memory attributes of region
     pub attributes: u32,
+
+    /// address of userspace provided data
     pub source_addr: u64,
 }
 
@@ -71,13 +79,18 @@ impl MemRegion {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Launcher facilitates the correct execution of the TDX command
 #[derive(Clone, Default)]
 pub struct Launcher {
+    /// Raw FD associated with the KVM VM fd
     vm_fd: RawFd,
+
+    /// Collection of Raw FDs associated with the vCPUs created with KVM
     vcpu_fds: Vec<RawFd>,
 }
 
 impl Launcher {
+    /// Initialize a new Launcher
     pub fn new(vm_fd: RawFd) -> Self {
         Self {
             vm_fd,
@@ -85,6 +98,8 @@ impl Launcher {
         }
     }
 
+    /// Retrieve the TDX capabilities that KVM supports with the TDX module loaded
+    /// in the system.
     pub fn get_capabilities(&mut self) -> Result<TdxCapabilities> {
         let mut caps = kvm_tdx_capabilities::default();
 
@@ -126,6 +141,10 @@ impl Launcher {
         })
     }
 
+    /// Perform TDX specific VM initialization.
+    ///
+    /// Note: this must be called after after calling `KVM_CREATE_VM` and before
+    /// creating any vCPUs.
     pub fn init_vm(&mut self, caps: &TdxCapabilities, cpuid: kvm_bindings::CpuId) -> Result<()> {
         let mut defaults: Vec<kvm_bindings::kvm_cpuid_entry2> = cpuid.as_slice().to_vec();
         defaults.resize(
@@ -202,6 +221,7 @@ impl Launcher {
         None
     }
 
+    /// Complete measurement of the initial TD contents and mark it ready to run
     pub fn finalize(&mut self) -> Result<()> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::FinalizeVm, &0);
         FINALIZE
@@ -211,10 +231,13 @@ impl Launcher {
         Ok(())
     }
 
+    /// Add RawFd associated with a vCPU to the Launcher
     pub fn add_vcpu_fd(&mut self, fd: RawFd) {
         self.vcpu_fds.push(fd);
     }
 
+    /// Perform TDX specific vCPU initialization for each vCPU fd provided to
+    /// the Launcher
     pub fn init_vcpus(&mut self, hob_address: u64) -> Result<()> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::InitVcpu, &hob_address);
         for fd in self.vcpu_fds.iter_mut() {
@@ -223,6 +246,8 @@ impl Launcher {
         Ok(())
     }
 
+    /// Initialize @nr_pages TDX guest private memory starting from @gpa with
+    /// userspace provided data from @source_addr
     pub fn init_mem_region(&mut self, region: MemRegion) -> Result<()> {
         if self.vcpu_fds.is_empty() {
             return Err(Error::MissingVcpuFds);
