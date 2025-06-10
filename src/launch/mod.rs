@@ -4,11 +4,20 @@ mod bindings;
 mod linux;
 
 use bindings::{kvm_tdx_capabilities, kvm_tdx_init_mem_region, kvm_tdx_init_vm};
-use kvm_bindings::kvm_enable_cap;
 use linux::{Cmd, CmdId, TdxError, NR_CPUID_CONFIGS};
 
 use bitflags::bitflags;
-use kvm_ioctls::VmFd;
+use iocuddle::*;
+
+use std::os::unix::io::RawFd;
+
+const KVM: Group = Group::new(0xAE);
+const ENC_OP: Ioctl<WriteRead, &libc::c_ulong> = unsafe { KVM.write_read(0xBA) };
+const GET_CAPABILITIES: Ioctl<WriteRead, &Cmd<kvm_tdx_capabilities>> = unsafe { ENC_OP.lie() };
+const INIT_VM: Ioctl<WriteRead, &Cmd<kvm_tdx_init_vm>> = unsafe { ENC_OP.lie() };
+const INIT_VCPU: Ioctl<WriteRead, &Cmd<u64>> = unsafe { ENC_OP.lie() };
+const INIT_MEM_REGION: Ioctl<WriteRead, &Cmd<kvm_tdx_init_mem_region>> = unsafe { ENC_OP.lie() };
+const FINALIZE: Ioctl<WriteRead, &Cmd<u64>> = unsafe { ENC_OP.lie() };
 
 // Defined in linux/arch/x86/include/uapi/asm/kvm.h
 pub const KVM_X86_TDX_VM: u64 = 5;
@@ -42,24 +51,41 @@ pub fn vec_with_array_field<T: Default, F>(count: usize) -> Vec<T> {
     vec_with_size_in_bytes(vec_size_bytes)
 }
 
-/// Handle to the TDX VM file descriptor
-pub struct TdxVm {}
+pub struct MemRegion {
+    pub gpa: u64,
+    pub nr_pages: u64,
+    pub attributes: u32,
+    pub source_addr: u64,
+}
 
-impl TdxVm {
-    /// Create a new TDX VM with KVM
-    pub fn new(vm_fd: &VmFd) -> Result<Self, TdxError> {
-        let mut cap: kvm_enable_cap = kvm_enable_cap {
-            cap: kvm_bindings::KVM_CAP_X2APIC_API,
-            ..Default::default()
-        };
-        cap.args[0] = (1 << 0) | (1 << 1);
-        vm_fd.enable_cap(&cap).unwrap();
+impl MemRegion {
+    pub fn new(gpa: u64, nr_pages: u64, attributes: u32, source_addr: u64) -> Self {
+        Self {
+            gpa,
+            nr_pages,
+            attributes,
+            source_addr,
+        }
+    }
+}
 
-        Ok(Self {})
+pub type Result<T> = std::result::Result<T, TdxError>;
+
+#[derive(Clone, Default)]
+pub struct Launcher {
+    vm_fd: RawFd,
+    vcpu_fds: Vec<RawFd>,
+}
+
+impl Launcher {
+    pub fn new(vm_fd: RawFd) -> Self {
+        Self {
+            vm_fd,
+            vcpu_fds: Vec::new(),
+        }
     }
 
-    /// Retrieve information about the Intel TDX module
-    pub fn get_capabilities(&self, fd: &VmFd) -> Result<TdxCapabilities, TdxError> {
+    pub fn get_capabilities(&mut self) -> Result<TdxCapabilities> {
         let mut caps = kvm_tdx_capabilities::default();
 
         let mut defaults = Vec::with_capacity(NR_CPUID_CONFIGS);
@@ -83,9 +109,7 @@ impl TdxVm {
         let mut cmd: Cmd<kvm_tdx_capabilities> =
             Cmd::from(CmdId::GetCapabilities, &cpuid_entries[0]);
 
-        unsafe {
-            fd.encrypt_op(&mut cmd)?;
-        }
+        GET_CAPABILITIES.ioctl(&mut self.vm_fd, &mut cmd).unwrap();
 
         Ok(TdxCapabilities {
             attributes: AttributesFlags::from_bits_truncate(cpuid_entries[0].supported_attrs),
@@ -100,13 +124,7 @@ impl TdxVm {
         })
     }
 
-    /// Do additional VM initialization that is specific to Intel TDX
-    pub fn init_vm(
-        &self,
-        fd: &VmFd,
-        caps: &TdxCapabilities,
-        cpuid: kvm_bindings::CpuId,
-    ) -> Result<(), TdxError> {
+    pub fn init_vm(&mut self, caps: &TdxCapabilities, cpuid: kvm_bindings::CpuId) -> Result<()> {
         let mut defaults: Vec<kvm_bindings::kvm_cpuid_entry2> = cpuid.as_slice().to_vec();
         defaults.resize(
             kvm_bindings::KVM_MAX_CPUID_ENTRIES,
@@ -131,9 +149,7 @@ impl TdxVm {
         Self::tdx_filter_cpuid(&mut entries[0].cpuid, &caps.cpuid_configs);
 
         let mut cmd: Cmd<kvm_tdx_init_vm> = Cmd::from(CmdId::InitVm, &entries[0]);
-        unsafe {
-            fd.encrypt_op(&mut cmd)?;
-        }
+        INIT_VM.ioctl(&mut self.vm_fd, &mut cmd).unwrap();
 
         Ok(())
     }
@@ -182,12 +198,48 @@ impl TdxVm {
         None
     }
 
-    /// Complete measurement of the initial TD contents and mark it ready to run
-    pub fn finalize(&self, fd: &VmFd) -> Result<(), TdxError> {
+    pub fn finalize(&mut self) -> Result<()> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::FinalizeVm, &0);
-        unsafe {
-            fd.encrypt_op(&mut cmd)?;
+        FINALIZE.ioctl(&mut self.vm_fd, &mut cmd).unwrap();
+
+        Ok(())
+    }
+
+    pub fn add_vcpu_fd(&mut self, fd: RawFd) {
+        self.vcpu_fds.push(fd);
+    }
+
+    pub fn init_vcpus(&mut self, hob_address: u64) -> Result<()> {
+        let mut cmd: Cmd<u64> = Cmd::from(CmdId::InitVcpu, &hob_address);
+        for fd in self.vcpu_fds.iter_mut() {
+            INIT_VCPU.ioctl(fd, &mut cmd).unwrap();
         }
+        Ok(())
+    }
+
+    pub fn init_mem_region(&mut self, region: MemRegion) -> Result<()> {
+        if self.vcpu_fds.is_empty() {
+            return Err(TdxError {
+                code: -22,
+                message: String::from("missing vcpu fds"),
+            });
+        }
+
+        const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
+        let mem_region = kvm_tdx_init_mem_region {
+            source_addr: region.source_addr,
+            gpa: region.gpa,
+            nr_pages: region.nr_pages,
+        };
+
+        let mut cmd: Cmd<kvm_tdx_init_mem_region> = Cmd::from(CmdId::InitMemRegion, &mem_region);
+
+        // determines if we also extend the measurement
+        cmd.flags = (region.attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0) as u32;
+
+        INIT_MEM_REGION
+            .ioctl(&mut self.vcpu_fds[0], &mut cmd)
+            .unwrap();
 
         Ok(())
     }
@@ -318,63 +370,4 @@ pub struct TdxCapabilities {
     pub attributes: AttributesFlags,
     pub xfam: XFAMFlags,
     pub cpuid_configs: Vec<kvm_bindings::kvm_cpuid_entry2>,
-}
-
-/// Manually create the wrapper for KVM_MEMORY_ENCRYPT_OP since `kvm_ioctls` doesn't
-/// support `.encrypt_op` for vcpu fds
-use vmm_sys_util::*;
-ioctl_iowr_nr!(
-    KVM_MEMORY_ENCRYPT_OP,
-    kvm_bindings::KVMIO,
-    0xba,
-    std::os::raw::c_ulong
-);
-
-pub struct TdxVcpu {}
-
-impl TdxVcpu {
-    pub fn init(fd: &kvm_ioctls::VcpuFd, hob_address: u64) -> Result<(), TdxError> {
-        let mut cmd: Cmd<u64> = Cmd::from(CmdId::InitVcpu, &hob_address);
-        let ret = unsafe { ioctl::ioctl_with_mut_ptr(fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
-        if ret < 0 {
-            // can't return `ret` because it will just return -1 and not give the error
-            // code. `cmd.error` will also just be 0.
-            return Err(TdxError::from(errno::Error::last()));
-        }
-        Ok(())
-    }
-
-    /// Encrypt a memory continuous region
-    pub fn init_mem_region(
-        fd: &kvm_ioctls::VcpuFd,
-        gpa: u64,
-        nr_pages: u64,
-        attributes: u32,
-        source_addr: u64,
-    ) -> Result<(), TdxError> {
-        const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
-        let mem_region = kvm_tdx_init_mem_region {
-            source_addr,
-            gpa,
-            nr_pages,
-        };
-
-        let mut cmd: Cmd<kvm_tdx_init_mem_region> = Cmd::from(CmdId::InitMemRegion, &mem_region);
-
-        // determines if we also extend the measurement
-        cmd.flags = if attributes & TDVF_SECTION_ATTRIBUTES_MR_EXTEND > 0 {
-            1
-        } else {
-            0
-        };
-
-        let ret = unsafe { ioctl::ioctl_with_mut_ptr(fd, KVM_MEMORY_ENCRYPT_OP(), &mut cmd) };
-        if ret < 0 {
-            // can't return `ret` because it will just return -1 and not give the error
-            // code. `cmd.error` will also just be 0.
-            return Err(TdxError::from(errno::Error::last()));
-        }
-
-        Ok(())
-    }
 }
