@@ -60,6 +60,12 @@ impl From<kvm_ioctls::Error> for TdxError {
     }
 }
 
+impl From<std::io::Error> for TdxError {
+    fn from(err: std::io::Error) -> Self {
+        TdxError::from(err.raw_os_error().unwrap())
+    }
+}
+
 impl From<i32> for TdxError {
     fn from(errno: i32) -> Self {
         match errno {
