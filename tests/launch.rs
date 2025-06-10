@@ -3,8 +3,10 @@
 use kvm_ioctls::Kvm;
 use vmm_sys_util::*;
 
-use tdx::launch::{TdxVcpu, TdxVm};
+use tdx::launch::*;
 use tdx::tdvf;
+
+use std::os::unix::io::AsRawFd;
 
 // `mov eax,1000h` will set the value in the register eax (and rax since they both share the bottom 32 bits) to 1000h
 // `jmp *%rax` will jump the program to the address that rax contains, which in this case will be 1000h
@@ -16,7 +18,6 @@ const FIRMWARE: &[u8; 7] = &[
 #[test]
 fn launch() {
     const KVM_CAP_GUEST_MEMFD: u32 = 234;
-    const KVM_CAP_MEMORY_MAPPING: u32 = 236;
 
     // create vm
     let kvm_fd = Kvm::new().unwrap();
@@ -31,12 +32,12 @@ fn launch() {
     cap.args[0] = 24;
     vm_fd.enable_cap(&cap).unwrap();
 
-    let tdx_vm = TdxVm::new(&vm_fd).unwrap();
-    let _caps = tdx_vm.get_capabilities(&vm_fd).unwrap();
+    let mut launcher = Launcher::new(vm_fd.as_raw_fd());
+    let caps = launcher.get_capabilities().unwrap();
     let cpuid = kvm_fd
         .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
         .unwrap();
-    let _ = tdx_vm.init_vm(&vm_fd, &_caps, cpuid).unwrap();
+    launcher.init_vm(&caps, cpuid).unwrap();
 
     // get tdvf sections
     let mut firmware = std::fs::File::open("/usr/share/edk2/ovmf/OVMF.inteltdx.fd").unwrap();
@@ -45,6 +46,8 @@ fn launch() {
 
     // create vcpu
     let mut vcpufd = vm_fd.create_vcpu(10).unwrap();
+    launcher.add_vcpu_fd(vcpufd.as_raw_fd());
+
     let mut cpuid = kvm_fd
         .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
         .unwrap();
@@ -55,7 +58,8 @@ fn launch() {
         }
     }
     vcpufd.set_cpuid2(&cpuid).unwrap();
-    TdxVcpu::init(&vcpufd, hob_section.memory_address).unwrap();
+
+    launcher.init_vcpus(hob_section.memory_address).unwrap();
 
     // map memory to guest
     if !check_extension(KVM_CAP_GUEST_MEMFD) {
@@ -118,15 +122,12 @@ fn launch() {
     };
     vm_fd.set_memory_attributes(attr).unwrap();
 
-    if check_extension(KVM_CAP_MEMORY_MAPPING) {
-        // TODO(jakecorrenti): the current CentOS SIG doesn't support the KVM_MEMORY_MAPPING or
-        // KVM_TDX_EXTEND_MEMORY ioctls, which is what we would typically use here.
-    } else {
-        TdxVcpu::init_mem_region(&vcpufd, guest_addr, 1, 1, firmware_userspace).unwrap();
-    }
+    launcher
+        .init_mem_region(MemRegion::new(guest_addr, 1, 1, firmware_userspace))
+        .unwrap();
 
     // finalize measurement
-    tdx_vm.finalize(&vm_fd).unwrap();
+    launcher.finalize().unwrap();
 
     // run the vCPU
 
