@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::io::Error as IoError;
 use std::marker::PhantomData;
 
 pub const NR_CPUID_CONFIGS: usize = 24;
@@ -49,38 +50,26 @@ impl<'a, T: 'a> Cmd<'a, T> {
 }
 
 #[derive(Debug)]
-pub struct TdxError {
-    pub code: i32,
-    pub message: String,
+pub enum Error {
+    GetCapabilities(IoError),
+    InitVm(IoError),
+    InitVcpu(IoError),
+    InitMemRegion(IoError),
+    Finalize(IoError),
+    MissingVcpuFds,
 }
 
-impl From<kvm_ioctls::Error> for TdxError {
-    fn from(kvm_err: kvm_ioctls::Error) -> Self {
-        TdxError::from(kvm_err.errno())
-    }
-}
-
-impl From<std::io::Error> for TdxError {
-    fn from(err: std::io::Error) -> Self {
-        TdxError::from(err.raw_os_error().unwrap())
-    }
-}
-
-impl From<i32> for TdxError {
-    fn from(errno: i32) -> Self {
-        match errno {
-            7 => TdxError {
-                code: 7,
-                message: String::from("Invalid value for NR_CPUID_CONFIGS"),
-            },
-            25 => TdxError {
-                code: 25,
-                message: String::from("Inappropriate ioctl for device. Ensure the proper VM type is being used for the ioctl"),
-            },
-            _ => TdxError {
-                code: errno,
-                message: format!("errno: {}", errno),
-            },
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::GetCapabilities(io_err) => {
+                write!(f, "KVM_TDX_CAPABILITIES failed: {io_err}")
+            }
+            Error::InitVm(io_err) => write!(f, "KVM_TDX_INIT_VM failed: {io_err}"),
+            Error::InitVcpu(io_err) => write!(f, "KVM_TDX_INIT_VCPU failed: {io_err}"),
+            Error::InitMemRegion(io_err) => write!(f, "KVM_TDX_INIT_MEM_REGION failed: {io_err}"),
+            Error::Finalize(io_err) => write!(f, "KVM_TDX_FINALIZE failed: {io_err}"),
+            Error::MissingVcpuFds => write!(f, "Launcher contains zero vCPU file descriptors"),
         }
     }
 }

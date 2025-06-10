@@ -4,7 +4,7 @@ mod bindings;
 mod linux;
 
 use bindings::{kvm_tdx_capabilities, kvm_tdx_init_mem_region, kvm_tdx_init_vm};
-use linux::{Cmd, CmdId, TdxError, NR_CPUID_CONFIGS};
+use linux::{Cmd, CmdId, Error, NR_CPUID_CONFIGS};
 
 use bitflags::bitflags;
 use iocuddle::*;
@@ -69,7 +69,7 @@ impl MemRegion {
     }
 }
 
-pub type Result<T> = std::result::Result<T, TdxError>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Default)]
 pub struct Launcher {
@@ -109,7 +109,9 @@ impl Launcher {
         let mut cmd: Cmd<kvm_tdx_capabilities> =
             Cmd::from(CmdId::GetCapabilities, &cpuid_entries[0]);
 
-        GET_CAPABILITIES.ioctl(&mut self.vm_fd, &mut cmd).unwrap();
+        GET_CAPABILITIES
+            .ioctl(&mut self.vm_fd, &mut cmd)
+            .map_err(Error::GetCapabilities)?;
 
         Ok(TdxCapabilities {
             attributes: AttributesFlags::from_bits_truncate(cpuid_entries[0].supported_attrs),
@@ -149,7 +151,9 @@ impl Launcher {
         Self::tdx_filter_cpuid(&mut entries[0].cpuid, &caps.cpuid_configs);
 
         let mut cmd: Cmd<kvm_tdx_init_vm> = Cmd::from(CmdId::InitVm, &entries[0]);
-        INIT_VM.ioctl(&mut self.vm_fd, &mut cmd).unwrap();
+        INIT_VM
+            .ioctl(&mut self.vm_fd, &mut cmd)
+            .map_err(Error::InitVm)?;
 
         Ok(())
     }
@@ -200,7 +204,9 @@ impl Launcher {
 
     pub fn finalize(&mut self) -> Result<()> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::FinalizeVm, &0);
-        FINALIZE.ioctl(&mut self.vm_fd, &mut cmd).unwrap();
+        FINALIZE
+            .ioctl(&mut self.vm_fd, &mut cmd)
+            .map_err(Error::Finalize)?;
 
         Ok(())
     }
@@ -212,17 +218,14 @@ impl Launcher {
     pub fn init_vcpus(&mut self, hob_address: u64) -> Result<()> {
         let mut cmd: Cmd<u64> = Cmd::from(CmdId::InitVcpu, &hob_address);
         for fd in self.vcpu_fds.iter_mut() {
-            INIT_VCPU.ioctl(fd, &mut cmd).unwrap();
+            INIT_VCPU.ioctl(fd, &mut cmd).map_err(Error::InitVcpu)?;
         }
         Ok(())
     }
 
     pub fn init_mem_region(&mut self, region: MemRegion) -> Result<()> {
         if self.vcpu_fds.is_empty() {
-            return Err(TdxError {
-                code: -22,
-                message: String::from("missing vcpu fds"),
-            });
+            return Err(Error::MissingVcpuFds);
         }
 
         const TDVF_SECTION_ATTRIBUTES_MR_EXTEND: u32 = 1u32 << 0;
@@ -239,7 +242,7 @@ impl Launcher {
 
         INIT_MEM_REGION
             .ioctl(&mut self.vcpu_fds[0], &mut cmd)
-            .unwrap();
+            .map_err(Error::InitMemRegion)?;
 
         Ok(())
     }
