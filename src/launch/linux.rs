@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::io::Error as IoError;
 use std::marker::PhantomData;
 
 pub const NR_CPUID_CONFIGS: usize = 24;
@@ -45,31 +44,6 @@ impl<'a, T: 'a> Cmd<'a, T> {
             data: data as *const T as _,
             error: 0,
             _phantom: PhantomData,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub enum Error {
-    GetCapabilities(IoError),
-    InitVm(IoError),
-    InitVcpu(IoError),
-    InitMemRegion(IoError),
-    Finalize(IoError),
-    MissingVcpuFds,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::GetCapabilities(io_err) => {
-                write!(f, "KVM_TDX_CAPABILITIES failed: {io_err}")
-            }
-            Error::InitVm(io_err) => write!(f, "KVM_TDX_INIT_VM failed: {io_err}"),
-            Error::InitVcpu(io_err) => write!(f, "KVM_TDX_INIT_VCPU failed: {io_err}"),
-            Error::InitMemRegion(io_err) => write!(f, "KVM_TDX_INIT_MEM_REGION failed: {io_err}"),
-            Error::Finalize(io_err) => write!(f, "KVM_TDX_FINALIZE failed: {io_err}"),
-            Error::MissingVcpuFds => write!(f, "Launcher contains zero vCPU file descriptors"),
         }
     }
 }

@@ -4,11 +4,12 @@ mod bindings;
 mod linux;
 
 use bindings::{kvm_tdx_capabilities, kvm_tdx_init_mem_region, kvm_tdx_init_vm};
-use linux::{Cmd, CmdId, Error, NR_CPUID_CONFIGS};
+use linux::{Cmd, CmdId, NR_CPUID_CONFIGS};
 
 use bitflags::bitflags;
 use iocuddle::*;
 
+use std::io::Error as IoError;
 use std::os::unix::io::RawFd;
 
 const KVM: Group = Group::new(0xAE);
@@ -45,10 +46,35 @@ fn vec_with_size_in_bytes<T: Default>(size_in_bytes: usize) -> Vec<T> {
 // for `Foo`, a `Vec<Foo>` is created. Only the first element of `Vec<Foo>` would actually be used
 // as a `Foo`. The remaining memory in the `Vec<Foo>` is for `entries`, which must be contiguous
 // with `Foo`. This function is used to make the `Vec<Foo>` with enough space for `count` entries.
-pub fn vec_with_array_field<T: Default, F>(count: usize) -> Vec<T> {
+fn vec_with_array_field<T: Default, F>(count: usize) -> Vec<T> {
     let element_space = count * std::mem::size_of::<F>();
     let vec_size_bytes = std::mem::size_of::<T>() + element_space;
     vec_with_size_in_bytes(vec_size_bytes)
+}
+
+#[derive(Debug)]
+pub enum Error {
+    GetCapabilities(IoError),
+    InitVm(IoError),
+    InitVcpu(IoError),
+    InitMemRegion(IoError),
+    Finalize(IoError),
+    MissingVcpuFds,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::GetCapabilities(io_err) => {
+                write!(f, "KVM_TDX_CAPABILITIES failed: {io_err}")
+            }
+            Error::InitVm(io_err) => write!(f, "KVM_TDX_INIT_VM failed: {io_err}"),
+            Error::InitVcpu(io_err) => write!(f, "KVM_TDX_INIT_VCPU failed: {io_err}"),
+            Error::InitMemRegion(io_err) => write!(f, "KVM_TDX_INIT_MEM_REGION failed: {io_err}"),
+            Error::Finalize(io_err) => write!(f, "KVM_TDX_FINALIZE failed: {io_err}"),
+            Error::MissingVcpuFds => write!(f, "Launcher contains zero vCPU file descriptors"),
+        }
+    }
 }
 
 /// Represents the memory region to be initialized by KVM_TDX_INIT_MEM_REGION
