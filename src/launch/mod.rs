@@ -4,7 +4,7 @@ mod bindings;
 mod linux;
 
 use bindings::{kvm_tdx_capabilities, kvm_tdx_init_mem_region, kvm_tdx_init_vm};
-use linux::{Cmd, CmdId, NR_CPUID_CONFIGS};
+use linux::{Cmd, CmdId};
 
 use bitflags::bitflags;
 use iocuddle::*;
@@ -128,31 +128,47 @@ impl Launcher {
     /// in the system.
     pub fn get_capabilities(&mut self) -> Result<TdxCapabilities> {
         let mut caps = kvm_tdx_capabilities::default();
+        let mut defaults: Vec<kvm_bindings::kvm_cpuid_entry2>;
+        let mut cpuid_entries: Vec<kvm_tdx_capabilities>;
 
-        let mut defaults = Vec::with_capacity(NR_CPUID_CONFIGS);
-        (0..NR_CPUID_CONFIGS)
-            .for_each(|_| defaults.push(kvm_bindings::kvm_cpuid_entry2::default()));
-        let mut cpuid_entries = vec_with_array_field::<
-            kvm_tdx_capabilities,
-            kvm_bindings::kvm_cpuid_entry2,
-        >(NR_CPUID_CONFIGS);
-        cpuid_entries[0].cpuid.nent = NR_CPUID_CONFIGS as u32;
-        cpuid_entries[0].cpuid.padding = 0;
-        unsafe {
-            let cpuid_entries_slice: &mut [kvm_bindings::kvm_cpuid_entry2] = cpuid_entries[0]
-                .cpuid
-                .entries
-                .as_mut_slice(NR_CPUID_CONFIGS);
-            cpuid_entries_slice.copy_from_slice(defaults.as_slice());
+        let mut nr_cpuid_configs = 6;
+
+        loop {
+            // configure the vec of the defaults with a nr_cpuid_configs capacity
+            defaults = Vec::with_capacity(nr_cpuid_configs);
+            (0..nr_cpuid_configs)
+                .for_each(|_| defaults.push(kvm_bindings::kvm_cpuid_entry2::default()));
+
+            // allocate the memory for the dynamic number of entries to be eventually copied into
+            cpuid_entries = vec_with_array_field::<
+                kvm_tdx_capabilities,
+                kvm_bindings::kvm_cpuid_entry2,
+            >(nr_cpuid_configs);
+            cpuid_entries[0].cpuid.nent = nr_cpuid_configs as u32;
+            cpuid_entries[0].cpuid.padding = 0;
+            unsafe {
+                let cpuid_entries_slice: &mut [kvm_bindings::kvm_cpuid_entry2] = cpuid_entries[0]
+                    .cpuid
+                    .entries
+                    .as_mut_slice(nr_cpuid_configs);
+                cpuid_entries_slice.copy_from_slice(defaults.as_slice());
+            }
+            caps.cpuid.nent = nr_cpuid_configs as u32;
+            caps.cpuid.padding = 0;
+            let mut cmd: Cmd<kvm_tdx_capabilities> =
+                Cmd::from(CmdId::GetCapabilities, &cpuid_entries[0]);
+
+            match GET_CAPABILITIES.ioctl(&mut self.vm_fd, &mut cmd) {
+                Err(e) if e.raw_os_error().is_some_and(|x| x == 7) => {
+                    drop(defaults);
+                    drop(cpuid_entries);
+                    nr_cpuid_configs *= 2;
+                    continue;
+                }
+                Err(e) => return Err(Error::GetCapabilities(e)),
+                Ok(_) => break,
+            };
         }
-        caps.cpuid.nent = NR_CPUID_CONFIGS as u32;
-        caps.cpuid.padding = 0;
-        let mut cmd: Cmd<kvm_tdx_capabilities> =
-            Cmd::from(CmdId::GetCapabilities, &cpuid_entries[0]);
-
-        GET_CAPABILITIES
-            .ioctl(&mut self.vm_fd, &mut cmd)
-            .map_err(Error::GetCapabilities)?;
 
         Ok(TdxCapabilities {
             attributes: AttributesFlags::from_bits_truncate(cpuid_entries[0].supported_attrs),
