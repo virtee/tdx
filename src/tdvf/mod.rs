@@ -8,7 +8,7 @@ use uuid::Uuid;
 const EXPECTED_TABLE_FOOTER_GUID: &str = "96b582de-1fb2-45f7-baea-a366c55a082d";
 const EXPECTED_METADATA_GUID: &str = "e47a6535-984a-4798-865e-4685a7bf8ec2";
 
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Default, Debug)]
 struct TdvfDescriptor {
     /// Signature should equal "TDVF" in bytes
@@ -24,7 +24,7 @@ struct TdvfDescriptor {
     number_of_section_entry: u32,
 }
 
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TdvfSection {
     /// The offset to the raw section in the binary image
