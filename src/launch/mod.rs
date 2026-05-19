@@ -127,7 +127,7 @@ impl Launcher {
     /// Retrieve the TDX capabilities that KVM supports with the TDX module loaded
     /// in the system.
     pub fn get_capabilities(&mut self) -> Result<TdxCapabilities> {
-        let mut caps = kvm_tdx_capabilities::default();
+        let mut _caps = kvm_tdx_capabilities::default();
         let mut defaults: Vec<kvm_bindings::kvm_cpuid_entry2>;
         let mut cpuid_entries: Vec<kvm_tdx_capabilities>;
 
@@ -153,8 +153,8 @@ impl Launcher {
                     .as_mut_slice(nr_cpuid_configs);
                 cpuid_entries_slice.copy_from_slice(defaults.as_slice());
             }
-            caps.cpuid.nent = nr_cpuid_configs as u32;
-            caps.cpuid.padding = 0;
+            _caps.cpuid.nent = nr_cpuid_configs as u32;
+            _caps.cpuid.padding = 0;
             let mut cmd: Cmd<kvm_tdx_capabilities> =
                 Cmd::from(CmdId::GetCapabilities, &cpuid_entries[0]);
 
